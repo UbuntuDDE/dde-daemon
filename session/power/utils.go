@@ -20,39 +20,17 @@
 package power
 
 import (
-	"fmt"
-	x "github.com/linuxdeepin/go-x11-client"
-	"github.com/linuxdeepin/go-x11-client/ext/dpms"
-	"github.com/linuxdeepin/go-x11-client/util/wm/icccm"
-	"os"
+	"math"
 	"os/exec"
+	"time"
+
+	dbus "github.com/godbus/dbus"
+	"github.com/linuxdeepin/go-x11-client/ext/dpms"
 	"pkg.deepin.io/dde/api/soundutils"
-	dbus "pkg.deepin.io/lib/dbus1"
 	. "pkg.deepin.io/lib/gettext"
 	"pkg.deepin.io/lib/gsettings"
 	"pkg.deepin.io/lib/pulse"
-	"time"
 )
-
-func (m *Manager) findWindow(wmClassInstance, wmClassClass string) x.Window {
-	c := m.helper.xConn
-	rootWin := c.GetDefaultScreen().Root
-	tree, err := x.QueryTree(c, rootWin).Reply(c)
-	if err != nil {
-		logger.Warning("QueryTree error:", err)
-		return 0
-	}
-
-	for _, win := range tree.Children {
-		wmClass, err := icccm.GetWMClass(c, win).Reply(c)
-		if err == nil &&
-			wmClass.Instance == wmClassInstance &&
-			wmClass.Class == wmClassClass {
-			return win
-		}
-	}
-	return 0
-}
 
 func (m *Manager) waitLockShowing(timeout time.Duration) {
 	ticker := time.NewTicker(time.Millisecond * 300)
@@ -143,29 +121,49 @@ func (m *Manager) doLock(autoStartAuth bool) {
 	}
 }
 
-func (m *Manager) doSuspend() {
-	if os.Getenv("POWER_CAN_SLEEP") == "0" {
-		logger.Info("can not suspend, env POWER_CAN_SLEEP == 0")
-		return
-	}
-
-	sessionManager := m.helper.SessionManager
-	can, err := sessionManager.CanSuspend(0)
+func (m *Manager) canSuspend() bool {
+	can, err := m.helper.SessionManager.CanSuspend(0)
 	if err != nil {
 		logger.Warning(err)
-		return
+		return false
 	}
+	return can
+}
 
-	if !can {
+func (m *Manager) doSuspend() {
+	if !m.canSuspend() {
 		logger.Info("can not suspend")
 		return
 	}
 
 	logger.Debug("suspend")
-	err = sessionManager.RequestSuspend(0)
+	err := m.helper.SessionManager.RequestSuspend(0)
 	if err != nil {
 		logger.Warning("failed to suspend:", err)
 	}
+}
+
+// 为了处理待机闪屏的问题，通过前端进行待机，前端会在待机前显示一个纯黑的界面
+func (m *Manager) doSuspendByFront() {
+	if !m.canSuspend() {
+		logger.Info("can not suspend")
+		return
+	}
+
+	logger.Debug("suspend")
+	err := m.helper.ShutdownFront.Suspend(0)
+	if err != nil {
+		logger.Warning("failed to suspend:", err)
+	}
+}
+
+func (m *Manager) canShutdown() bool {
+	can, err := m.helper.SessionManager.CanShutdown(0)
+	if err != nil {
+		logger.Warning(err)
+		return false
+	}
+	return can
 }
 
 func (m *Manager) doShutdown() {
@@ -188,26 +186,35 @@ func (m *Manager) doShutdown() {
 	}
 }
 
-func (m *Manager) doHibernate() {
-	if os.Getenv("POWER_CAN_SLEEP") == "0" {
-		logger.Info("can not hibernate, env POWER_CAN_SLEEP == 0")
-		return
-	}
-
-	sessionManager := m.helper.SessionManager
-	can, err := sessionManager.CanHibernate(0)
+func (m *Manager) canHibernate() bool {
+	can, err := m.helper.SessionManager.CanHibernate(0)
 	if err != nil {
 		logger.Warning(err)
+		return false
+	}
+	return can
+}
+
+func (m *Manager) doHibernate() {
+	if !m.canHibernate() {
+		logger.Info("can not hibernate")
 		return
 	}
+	logger.Debug("hibernate")
+	err := m.helper.SessionManager.RequestHibernate(0)
+	if err != nil {
+		logger.Warning("failed to hibernate:", err)
+	}
+}
 
-	if !can {
+func (m *Manager) doHibernateByFront() {
+	if !m.canHibernate() {
 		logger.Info("can not hibernate")
 		return
 	}
 
 	logger.Debug("hibernate")
-	err = sessionManager.RequestHibernate(0)
+	err := m.helper.ShutdownFront.Hibernate(0)
 	if err != nil {
 		logger.Warning("failed to hibernate:", err)
 	}
@@ -249,12 +256,22 @@ func (m *Manager) setAndSaveDisplayBrightness(brightnessTable map[string]float64
 
 func doShowDDELowPower() {
 	logger.Info("Show dde low power")
-	go exec.Command(cmdDDELowPower, "--raise").Run()
+	go func() {
+		err := exec.Command(cmdDDELowPower, "--raise").Run()
+		if err != nil {
+			logger.Warning(err)
+		}
+	}()
 }
 
 func doCloseDDELowPower() {
 	logger.Info("Close low power")
-	go exec.Command(cmdDDELowPower, "--quit").Run()
+	go func() {
+		err := exec.Command(cmdDDELowPower, "--quit").Run()
+		if err != nil {
+			logger.Warning(err)
+		}
+	}()
 }
 
 func (m *Manager) sendNotify(icon, summary, body string) {
@@ -281,7 +298,12 @@ const iconBatteryLow = "notification-battery-low"
 
 func playSound(name string) {
 	logger.Debug("play system sound", name)
-	go soundutils.PlaySystemSound(name, "")
+	go func() {
+		err := soundutils.PlaySystemSound(name, "")
+		if err != nil {
+			logger.Warning(err)
+		}
+	}()
 }
 
 const (
@@ -342,10 +364,6 @@ func suspendPulseSources(suspend int) {
 	for _, source := range ctx.GetSourceList() {
 		ctx.SuspendSourceById(source.Index, suspend)
 	}
-}
-
-func brightnessRound(x float64) string {
-	return fmt.Sprintf("%.2f", x)
 }
 
 func (m *Manager) initGSettingsConnectChanged() {
@@ -409,4 +427,8 @@ func getPowerActionString(action int32) string {
 		return Tr("it will do nothing to your computer")
 	}
 	return ""
+}
+
+func isFloatEqual(f1, f2 float64) bool {
+	return math.Abs(f1-f2) < 1e-6
 }

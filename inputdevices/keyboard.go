@@ -26,22 +26,22 @@ import (
 	"os"
 	"os/user"
 	"path"
-	"pkg.deepin.io/lib/gsettings"
 	"regexp"
 	"strings"
 	"sync"
 
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.accounts"
-	"github.com/linuxdeepin/go-x11-client"
+	"github.com/godbus/dbus"
+	accounts "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.accounts"
+	x "github.com/linuxdeepin/go-x11-client"
 	"github.com/linuxdeepin/go-x11-client/util/wm/ewmh"
 	"github.com/linuxdeepin/go-x11-client/util/wm/icccm"
 	"pkg.deepin.io/dde/api/dxinput"
 	ddbus "pkg.deepin.io/dde/daemon/dbus"
 	"pkg.deepin.io/gir/gio-2.0"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/gsprop"
 	"pkg.deepin.io/lib/dbusutil/proxy"
+	"pkg.deepin.io/lib/gsettings"
 	dutils "pkg.deepin.io/lib/utils"
 )
 
@@ -54,7 +54,6 @@ const (
 	kbdKeyLayoutOptions  = "layout-options"
 	kbdKeyCursorBlink    = "cursor-blink-time"
 	kbdKeyCapslockToggle = "capslock-toggle"
-	kbdKeyLayoutApp      = "layout-app"
 	kbdKeyAppLayoutMap   = "app-layout-map"
 	kbdKeyLayoutScope    = "layout-scope"
 
@@ -77,13 +76,13 @@ type Keyboard struct {
 	service        *dbusutil.Service
 	sysSigLoop     *dbusutil.SignalLoop
 	PropsMu        sync.RWMutex
-	CurrentLayout  string      `prop:"access:rw"`
-	LayoutScope    gsprop.Enum `prop:"access:rw"`
+	CurrentLayout  string `prop:"access:rw"`
 	appLayoutCfg   appLayoutConfig
 	// dbusutil-gen: equal=nil
 	UserLayoutList []string
 
 	// dbusutil-gen: ignore-below
+	LayoutScope    gsprop.Enum `prop:"access:rw"`
 	RepeatEnabled  gsprop.Bool `prop:"access:rw"`
 	CapslockToggle gsprop.Bool `prop:"access:rw"`
 
@@ -95,21 +94,10 @@ type Keyboard struct {
 	UserOptionList gsprop.Strv
 
 	setting   *gio.Settings
-	user      *accounts.User
+	user      accounts.User
 	layoutMap layoutMap
 
 	devNumber int
-
-	methods *struct {
-		AddLayoutOption    func() `in:"option"`
-		DeleteLayoutOption func() `in:"option"`
-
-		AddUserLayout    func() `in:"layout"`
-		DeleteUserLayout func() `in:"layout"`
-
-		GetLayoutDesc func() `in:"layout" out:"description"`
-		LayoutList    func() `out:"layout_list"`
-	}
 }
 
 func newKeyboard(service *dbusutil.Service) *Keyboard {
@@ -589,6 +577,10 @@ func getValueFromLine(line, delim string) string {
 }
 
 func applyXmodmapConfig() error {
+	err := doAction("xmodmap -e 'keycode 247 = XF86Away NoSymbol NoSymbol'")
+	if err != nil {
+		return err
+	}
 	config := os.Getenv("HOME") + "/.Xmodmap"
 	if !dutils.IsFileExist(config) {
 		return nil

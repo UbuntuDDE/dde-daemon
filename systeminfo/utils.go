@@ -64,6 +64,7 @@ func systemBit() string {
 
 func runLscpu() (map[string]string, error) {
 	cmd := exec.Command("lscpu")
+	cmd.Env = []string{"LC_ALL=C"}
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err

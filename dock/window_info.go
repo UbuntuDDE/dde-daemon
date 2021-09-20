@@ -70,6 +70,7 @@ type WindowInfo struct {
 
 	entryInnerId string
 	appInfo      *AppInfo
+	sync.Mutex
 }
 
 func NewWindowInfo(win x.Window) *WindowInfo {
@@ -178,22 +179,14 @@ func (winInfo *WindowInfo) isValidModal() bool {
 
 // 通过 wmClass 判断是否需要隐藏此窗口
 func (winInfo *WindowInfo) shouldSkipWithWMClass() bool {
-	var ignoreClasses = []string{
-		"dde-desktop",
-		"dde-dock",
-		"dde-launcher",
-	}
 	wmClass := winInfo.wmClass
 	if wmClass == nil {
 		return false
 	}
 	if wmClass.Instance == "explorer.exe" && wmClass.Class == "Wine" {
 		return true
-	}
-	for _, ignoreClass := range ignoreClasses {
-		if wmClass.Class == ignoreClass {
-			return true
-		}
+	} else if wmClass.Class == "dde-launcher" {
+		return true
 	}
 
 	return false
@@ -402,7 +395,10 @@ func genInnerId(winInfo *WindowInfo) string {
 	}
 
 	md5hash := md5.New()
-	md5hash.Write([]byte(str))
+	_, err := md5hash.Write([]byte(str))
+	if err != nil {
+		logger.Warning("Write error:",err)
+	}
 	innerId := windowHashPrefix + hex.EncodeToString(md5hash.Sum(nil))
 	logger.Debugf("genInnerId win: %v str: %s, innerId: %s", win, str, innerId)
 	return innerId

@@ -20,8 +20,8 @@
 package dbus
 
 import (
+	"github.com/godbus/dbus"
 	"pkg.deepin.io/lib"
-	"pkg.deepin.io/lib/dbus"
 )
 
 // IsSessionBusActivated check the special session bus name whether activated
@@ -48,6 +48,6 @@ func IsSystemBusActivated(dest string) bool {
 
 func releaseDBusName(bus *dbus.Conn, name string) {
 	if bus != nil {
-		bus.ReleaseName(name)
+		_, _ = bus.ReleaseName(name)
 	}
 }

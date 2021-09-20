@@ -23,10 +23,9 @@ import (
 	"fmt"
 	"sync"
 
+	dbus "github.com/godbus/dbus"
 	nmdbus "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.networkmanager"
-
 	"pkg.deepin.io/dde/daemon/network/nm"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	. "pkg.deepin.io/lib/gettext"
 )
@@ -131,7 +130,7 @@ type stateHandler struct {
 }
 
 type deviceStateInfo struct {
-	nmDev          *nmdbus.Device
+	nmDev          nmdbus.Device
 	enabled        bool
 	devUdi         string
 	devType        uint32
@@ -180,7 +179,7 @@ func newStateHandler(sysSigLoop *dbusutil.SignalLoop, m *Manager) (sh *stateHand
 }
 
 func destroyStateHandler(sh *stateHandler) {
-	for path, _ := range sh.devices {
+	for path := range sh.devices {
 		sh.remove(path)
 	}
 	sh.devices = nil
@@ -201,7 +200,7 @@ func (sh *stateHandler) watch(path dbus.ObjectPath) {
 		return
 	}
 
-	deviceType, _ := nmDev.DeviceType().Get(0)
+	deviceType, _ := nmDev.Device().DeviceType().Get(0)
 	if !isDeviceTypeValid(deviceType) {
 		return
 	}
@@ -210,7 +209,7 @@ func (sh *stateHandler) watch(path dbus.ObjectPath) {
 	defer sh.locker.Unlock()
 	sh.devices[path] = &deviceStateInfo{nmDev: nmDev}
 	sh.devices[path].devType = deviceType
-	sh.devices[path].devUdi, _ = nmDev.Udi().Get(0)
+	sh.devices[path].devUdi, _ = nmDev.Device().Udi().Get(0)
 	enabled, err := sh.m.sysNetwork.IsDeviceEnabled(0, string(path))
 	if err == nil {
 		sh.devices[path].enabled = enabled
@@ -226,7 +225,9 @@ func (sh *stateHandler) watch(path dbus.ObjectPath) {
 
 	// connect signals
 	nmDev.InitSignalExt(sh.sysSigLoop, true)
-	_, err = nmDev.ConnectStateChanged(func(newState, oldState, reason uint32) {
+	_, err = nmDev.Device().ConnectStateChanged(func(newState, oldState, reason uint32) {
+		globalSessionActive = sh.m.isSessionActive()
+
 		logger.Debugf("device state changed, %d => %d, reason[%d] %s", oldState, newState, reason, deviceErrorTable[reason])
 		sh.locker.Lock()
 		defer sh.locker.Unlock()
@@ -250,7 +251,10 @@ func (sh *stateHandler) watch(path dbus.ObjectPath) {
 				if dsi.connectionType == connectionWirelessHotspot {
 					notify(icon, "", Tr("Enabling hotspot"))
 				} else {
-					notify(icon, "", fmt.Sprintf(Tr("Connecting %q"), dsi.aconnId))
+					// 防止连接状态由60变40再次弹出正在连接的通知消息
+					if oldState == nm.NM_DEVICE_STATE_DISCONNECTED {
+						notify(icon, "", fmt.Sprintf(Tr("Connecting %q"), dsi.aconnId))
+					}
 				}
 			}
 		case nm.NM_DEVICE_STATE_ACTIVATED:
@@ -261,12 +265,6 @@ func (sh *stateHandler) watch(path dbus.ObjectPath) {
 				notify(icon, "", Tr("Hotspot enabled"))
 			} else {
 				notify(icon, "", fmt.Sprintf(Tr("%q connected"), msg))
-				if !sh.m.hasSaveSecret {
-					if data, err := nmGetDeviceActiveConnectionData(path); err == nil {
-						sh.savePasswordByConnectionStatus(data)
-					}
-					sh.m.hasSaveSecret = true
-				}
 			}
 		case nm.NM_DEVICE_STATE_FAILED, nm.NM_DEVICE_STATE_DISCONNECTED, nm.NM_DEVICE_STATE_NEED_AUTH,
 			nm.NM_DEVICE_STATE_UNMANAGED, nm.NM_DEVICE_STATE_UNAVAILABLE:
@@ -346,13 +344,10 @@ func (sh *stateHandler) watch(path dbus.ObjectPath) {
 					} else if dsi.connectionType == connectionWired {
 						msg = fmt.Sprintf(Tr("Unable to connect %q, please check your router or net cable."), dsi.aconnId)
 					}
-				case nm.NM_DEVICE_STATE_REASON_NO_SECRETS:
-					msg = fmt.Sprintf(Tr("Password is required to connect %q"), dsi.aconnId)
 				case nm.NM_DEVICE_STATE_REASON_SUPPLICANT_DISCONNECT:
 					if oldState == nm.NM_DEVICE_STATE_CONFIG && newState == nm.NM_DEVICE_STATE_NEED_AUTH {
 						msg = fmt.Sprintf(Tr("Connection failed, unable to connect %q, wrong password"), dsi.aconnId)
 					}
-					sh.m.hasSaveSecret = true
 				case CUSTOM_NM_DEVICE_STATE_REASON_CABLE_UNPLUGGED: //disconnected due to cable unplugged
 					// if device is ethernet,notify disconnected message
 
@@ -361,7 +356,10 @@ func (sh *stateHandler) watch(path dbus.ObjectPath) {
 						logger.Debug("unplugged device is ethernet")
 						msg = fmt.Sprintf(Tr("%q disconnected"), dsi.aconnId)
 					}
-
+				case nm.NM_DEVICE_STATE_REASON_NO_SECRETS:
+					msg = fmt.Sprintf(Tr("Password is required to connect %q"), dsi.aconnId)
+				case nm.NM_DEVICE_STATE_REASON_SSID_NOT_FOUND:
+					msg = fmt.Sprintf(Tr("The %q 802.11 WLAN network could not be found"), dsi.aconnId)
 					//default:
 					//	if dsi.aconnId != "" {
 					//		msg = fmt.Sprintf(Tr("%q disconnected"), dsi.aconnId)
@@ -384,20 +382,5 @@ func (sh *stateHandler) remove(path dbus.ObjectPath) {
 	if dev, ok := sh.devices[path]; ok {
 		nmDestroyDevice(dev.nmDev)
 		delete(sh.devices, path)
-	}
-}
-
-//Because the password is saved to keyring by
-//default, the storage operation needs to be
-//performed according to the status judgment, and
-//only when the password is correct.
-func (sh *stateHandler) savePasswordByConnectionStatus(data connectionData) {
-	connUUID, ok := getConnectionDataString(data, "connection", "uuid")
-	if !ok {
-		logger.Debug("Failed to save password because can not find connUUID")
-		return
-	}
-	for _, item := range sh.m.items {
-		sh.m.secretAgent.set(item.label, connUUID, item.settingName, item.settingKey, item.value)
 	}
 }

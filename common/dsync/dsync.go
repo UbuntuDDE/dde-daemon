@@ -3,13 +3,15 @@ package dsync
 import (
 	"encoding/json"
 
+	dbus "github.com/godbus/dbus"
 	ofdbus "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.dbus"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/proxy"
 	"pkg.deepin.io/lib/log"
 	"pkg.deepin.io/lib/strv"
 )
+
+//go:generate dbusutil-gen em -type Config
 
 type Interface interface {
 	Get() (interface{}, error)
@@ -19,14 +21,10 @@ type Interface interface {
 type Config struct {
 	name       string
 	core       Interface
-	dbusDaemon *ofdbus.DBus
+	dbusDaemon ofdbus.DBus
 	path       dbus.ObjectPath
 	sigLoop    *dbusutil.SignalLoop
 	logger     *log.Logger
-	methods    *struct {
-		Get func() `out:"data"`
-		Set func() `in:"data"`
-	}
 }
 
 const (
@@ -54,7 +52,6 @@ func NewConfig(name string, core Interface, sessionSigLoop *dbusutil.SignalLoop,
 				c.logger.Warning(err)
 			}
 		}
-		return
 	})
 	if err != nil {
 		logger.Warning(err)
@@ -90,13 +87,13 @@ func (*Config) GetInterfaceName() string {
 	return "com.deepin.sync.Config"
 }
 
-func (c *Config) Get() ([]byte, *dbus.Error) {
+func (c *Config) Get() (data []byte, busErr *dbus.Error) {
 	v, err := c.core.Get()
 	if err != nil {
 		return nil, dbusutil.ToError(err)
 	}
 
-	data, err := json.Marshal(v)
+	data, err = json.Marshal(v)
 	if err != nil {
 		return nil, dbusutil.ToError(err)
 	}

@@ -20,12 +20,11 @@
 package audio
 
 import (
+	"fmt"
 	"sort"
 
-	"fmt"
-
+	dbus "github.com/godbus/dbus"
 	bluez "github.com/linuxdeepin/go-dbus-factory/org.bluez"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/pulse"
 	"pkg.deepin.io/lib/strv"
 )
@@ -54,7 +53,7 @@ func profileBlacklist(c *pulse.Card) strv.Strv {
 	switch cardType(c) {
 	case CardBluethooh:
 		// TODO: bluez not full support headset_head_unit, please skip
-		blacklist = []string{"off", "headset_head_unit"}
+		blacklist = []string{"off"}
 	default:
 		// CardBuildin, CardUnknow and other
 		blacklist = []string{"off"}

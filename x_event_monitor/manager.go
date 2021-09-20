@@ -25,16 +25,18 @@ import (
 	"fmt"
 	"sync"
 
+	dbus "github.com/godbus/dbus"
 	x "github.com/linuxdeepin/go-x11-client"
 	"github.com/linuxdeepin/go-x11-client/ext/ge"
 	"github.com/linuxdeepin/go-x11-client/ext/input"
 	"github.com/linuxdeepin/go-x11-client/ext/xfixes"
 	"github.com/linuxdeepin/go-x11-client/util/keysyms"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/strv"
 	dutils "pkg.deepin.io/lib/utils"
 )
+
+//go:generate dbusutil-gen em -type Manager
 
 const fullscreenId = "d41d8cd98f00b204e9800998ecf8427e"
 
@@ -44,7 +46,7 @@ var errAreasNotRegistered = errors.New("the areas has not been registered yet")
 type coordinateInfo struct {
 	areas        []coordinateRange
 	moveIntoFlag bool
-	motionFlag   bool
+	motionFlag   bool //是否发送鼠标在区域中移动的信号
 	buttonFlag   bool
 	keyFlag      bool
 }
@@ -62,14 +64,13 @@ type Manager struct {
 	xConn               *x.Conn
 	keySymbols          *keysyms.KeySymbols
 	service             *dbusutil.Service
-	signals             *struct {
-		CancelAllArea struct{}
-
+	//nolint
+	signals *struct {
+		CancelAllArea                     struct{}
 		CursorInto, CursorOut, CursorMove struct {
 			x, y int32
 			id   string
 		}
-
 		ButtonPress, ButtonRelease struct {
 			button, x, y int32
 			id           string
@@ -79,19 +80,13 @@ type Manager struct {
 			x, y int32
 			id   string
 		}
+		CursorShowAgain struct{}
 	}
 
-	methods *struct {
-		RegisterArea        func() `in:"x1,y1,x2,y2,flag" out:"id"`
-		RegisterAreas       func() `in:"areas,flag" out:"id"`
-		RegisterFullScreen  func() `out:"id"`
-		UnregisterArea      func() `in:"id" out:"ok"`
-		DebugGetPidAreasMap func() `out:"pidAreasMapJSON"`
-	}
-
-	pidAidsMap      map[uint32]strv.Strv
-	idAreaInfoMap   map[string]*coordinateInfo
-	idReferCountMap map[string]int32
+	pidAidsMap            map[uint32]strv.Strv
+	idAreaInfoMap         map[string]*coordinateInfo
+	idReferCountMap       map[string]int32
+	fullscreenMotionCount int32
 
 	mu sync.Mutex
 }
@@ -176,6 +171,10 @@ func (m *Manager) beginMoveMouse() {
 		logger.Warning(err)
 	}
 	m.cursorShowed = true
+	err = m.service.Emit(m, "CursorShowAgain")
+	if err != nil {
+		logger.Warning(err)
+	}
 }
 
 func (m *Manager) beginTouch() {
@@ -249,6 +248,11 @@ func (m *Manager) handleXEvent() {
 					//logger.Debug("raw motion event")
 					if m.hideCursorWhenTouch {
 						m.beginMoveMouse()
+					}
+
+					_, ok := m.idReferCountMap[fullscreenId]
+					if len(m.idAreaInfoMap) == 0 && !ok {
+						break
 					}
 					qpReply, err := m.queryPointer()
 					if err != nil {
@@ -379,7 +383,7 @@ func (m *Manager) handleCursorEvent(x, y int32, press bool) {
 	}
 
 	_, ok := m.idReferCountMap[fullscreenId]
-	if ok {
+	if ok && m.fullscreenMotionCount > 0 {
 		err := m.service.Emit(m, "CursorMove", x, y, fullscreenId)
 		if err != nil {
 			logger.Warning(err)
@@ -399,9 +403,15 @@ func (m *Manager) handleButtonEvent(button int32, press bool, x, y int32) {
 		}
 
 		if press {
-			m.service.Emit(m, "ButtonPress", button, x, y, id)
+			err := m.service.Emit(m, "ButtonPress", button, x, y, id)
+			if err != nil {
+				logger.Warning("Emit error:", err)
+			}
 		} else {
-			m.service.Emit(m, "ButtonRelease", button, x, y, id)
+			err := m.service.Emit(m, "ButtonRelease", button, x, y, id)
+			if err != nil {
+				logger.Warning("Emit error:", err)
+			}
 		}
 	}
 
@@ -411,9 +421,15 @@ func (m *Manager) handleButtonEvent(button int32, press bool, x, y int32) {
 	}
 
 	if press {
-		m.service.Emit(m, "ButtonPress", button, x, y, fullscreenId)
+		err := m.service.Emit(m, "ButtonPress", button, x, y, fullscreenId)
+		if err != nil {
+			logger.Warning("Emit error:", err)
+		}
 	} else {
-		m.service.Emit(m, "ButtonRelease", button, x, y, fullscreenId)
+		err := m.service.Emit(m, "ButtonRelease", button, x, y, fullscreenId)
+		if err != nil {
+			logger.Warning("Emit error:", err)
+		}
 	}
 }
 
@@ -434,30 +450,34 @@ func (m *Manager) handleKeyboardEvent(code int32, press bool, x, y int32) {
 		}
 
 		if press {
-			m.service.Emit(m, "KeyPress", m.keyCode2Str(code), x, y, id)
+			err := m.service.Emit(m, "KeyPress", m.keyCode2Str(code), x, y, id)
+			if err != nil {
+				logger.Warning("Emit error:", err)
+			}
 		} else {
-			m.service.Emit(m, "KeyRelease", m.keyCode2Str(code), x, y, id)
+			err := m.service.Emit(m, "KeyRelease", m.keyCode2Str(code), x, y, id)
+			if err != nil {
+				logger.Warning("Emit error:", err)
+			}
 		}
 	}
 
 	_, ok := m.idReferCountMap[fullscreenId]
 	if ok {
 		if press {
-			m.service.Emit(m, "KeyPress", m.keyCode2Str(code), x, y,
+			err := m.service.Emit(m, "KeyPress", m.keyCode2Str(code), x, y,
 				fullscreenId)
+			if err != nil {
+				logger.Warning("Emit error:", err)
+			}
 		} else {
-			m.service.Emit(m, "KeyRelease", m.keyCode2Str(code), x, y,
+			err := m.service.Emit(m, "KeyRelease", m.keyCode2Str(code), x, y,
 				fullscreenId)
+			if err != nil {
+				logger.Warning("Emit error:", err)
+			}
 		}
 	}
-
-}
-
-func (m *Manager) cancelAllRegisterArea() {
-	m.idAreaInfoMap = make(map[string]*coordinateInfo)
-	m.idReferCountMap = make(map[string]int32)
-
-	m.service.Emit(m, "CancelAllArea")
 }
 
 func (m *Manager) isPidAreaRegistered(pid uint32, areasId string) bool {
@@ -487,7 +507,7 @@ func (m *Manager) unregisterPidArea(pid uint32, areasId string) {
 	}
 }
 
-func (m *Manager) RegisterArea(sender dbus.Sender, x1, y1, x2, y2, flag int32) (string, *dbus.Error) {
+func (m *Manager) RegisterArea(sender dbus.Sender, x1, y1, x2, y2, flag int32) (id string, busErr *dbus.Error) {
 	return m.RegisterAreas(sender,
 		[]coordinateRange{{x1, y1, x2, y2}},
 		flag)
@@ -560,7 +580,7 @@ func (m *Manager) RegisterFullScreen(sender dbus.Sender) (id string, busErr *dbu
 	return fullscreenId, nil
 }
 
-func (m *Manager) UnregisterArea(sender dbus.Sender, id string) (bool, *dbus.Error) {
+func (m *Manager) UnregisterArea(sender dbus.Sender, id string) (ok bool, busErr *dbus.Error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -576,8 +596,8 @@ func (m *Manager) UnregisterArea(sender dbus.Sender, id string) (bool, *dbus.Err
 
 	m.unregisterPidArea(pid, id)
 
-	_, ok := m.idReferCountMap[id]
-	if !ok {
+	_, ok1 := m.idReferCountMap[id]
+	if !ok1 {
 		logger.Warningf("not found key %q in idReferCountMap", id)
 		return false, nil
 	}
@@ -589,6 +609,46 @@ func (m *Manager) UnregisterArea(sender dbus.Sender, id string) (bool, *dbus.Err
 	}
 	logger.Debugf("area %q unregistered by pid %d", id, pid)
 	return true, nil
+}
+
+func (m *Manager) RegisterFullScreenMotionFlag(sender dbus.Sender) *dbus.Error {
+	err := m.changeFullscreenMotionCount(true, sender)
+	return dbusutil.ToError(err)
+}
+
+func (m *Manager) UnregisterFullScreenMotionFlag(sender dbus.Sender) *dbus.Error {
+	err := m.changeFullscreenMotionCount(false, sender)
+	return dbusutil.ToError(err)
+}
+
+func (m *Manager) changeFullscreenMotionCount(add bool, sender dbus.Sender) (err error) {
+	pid, err := m.service.GetConnPID(string(sender))
+	if err != nil {
+		return
+	}
+	var (
+		count    int32
+		funcName string
+	)
+	if add {
+		count = 1
+		funcName = "RegisterFullScreenMotionFlag"
+	} else {
+		count = -1
+		funcName = "UnregisterFullScreenMotionFlag"
+	}
+	logger.Debugf("%s pid %d", funcName, pid)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	aidList, ok := m.pidAidsMap[pid]
+	if !ok || !aidList.Contains(fullscreenId) {
+		err = fmt.Errorf("%s err: pid %d hasn't registed fullscreen motion", funcName, pid)
+		return
+	}
+	m.fullscreenMotionCount += count
+
+	return nil
 }
 
 func (m *Manager) getIdList(x, y int32) ([]string, []string) {
@@ -639,7 +699,7 @@ func (m *Manager) sumAreasMd5(areas []coordinateRange, flag int32) (md5Str strin
 	return
 }
 
-func (m *Manager) DebugGetPidAreasMap() (string, *dbus.Error) {
+func (m *Manager) DebugGetPidAreasMap() (pidAreasMapJSON string, busErr *dbus.Error) {
 	m.mu.Lock()
 	data, err := json.Marshal(m.pidAidsMap)
 	m.mu.Unlock()

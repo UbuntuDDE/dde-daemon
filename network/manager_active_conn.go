@@ -22,8 +22,8 @@ package network
 import (
 	"strings"
 
+	dbus "github.com/godbus/dbus"
 	"pkg.deepin.io/dde/daemon/network/nm"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	. "pkg.deepin.io/lib/gettext"
 )
@@ -33,11 +33,12 @@ type activeConnection struct {
 	typ       string
 	vpnFailed bool
 
-	Devices []dbus.ObjectPath
-	Id      string
-	Uuid    string
-	State   uint32
-	Vpn     bool
+	Devices        []dbus.ObjectPath
+	Id             string
+	Uuid           string
+	State          uint32
+	Vpn            bool
+	SpecificObject dbus.ObjectPath
 }
 
 var frequencyChannelMap = map[uint32]int32{
@@ -55,6 +56,7 @@ type activeConnectionInfo struct {
 	IsPrimaryConnection bool
 	Device              dbus.ObjectPath
 	SettingPath         dbus.ObjectPath
+	SpecificObject      dbus.ObjectPath
 	ConnectionType      string
 	Protocol            string
 	ConnectionName      string
@@ -89,6 +91,7 @@ type hotspotConnectionInfo struct {
 
 func (m *Manager) initActiveConnectionManage() {
 	m.initActiveConnections()
+
 	senderNm := "org.freedesktop.NetworkManager"
 	interfaceActiveConnection := "org.freedesktop.NetworkManager.Connection.Active"
 	interfaceVpnConnection := "org.freedesktop.NetworkManager.VPN.Connection"
@@ -138,16 +141,37 @@ func (m *Manager) initActiveConnectionManage() {
 				return
 			}
 
+			specificPathVar, ok := props["SpecificPath"]
+			if ok {
+				specificPath, ok := specificPathVar.Value().(dbus.ObjectPath)
+				if ok {
+					logger.Debugf("active connection %s SpecificPath changed %v", sig.Path, specificPath)
+					m.updateActiveConnSpecificPath(sig.Path, specificPath)
+				}
+			}
+
+			var state uint32
+			var stateChanged bool
 			stateVar, ok := props["State"]
-			if !ok {
-				return
+			if ok {
+				state, stateChanged = stateVar.Value().(uint32)
+				if stateChanged {
+					logger.Debugf("active connection %s state changed %v", sig.Path, state)
+					m.updateActiveConnState(sig.Path, state)
+
+				}
 			}
-			state, ok := stateVar.Value().(uint32)
-			if !ok {
-				return
+
+			if stateChanged && state == nm.NM_ACTIVE_CONNECTION_STATE_ACTIVATED {
+				connectivity, err := nmManager.CheckConnectivity(0)
+				if err != nil {
+					logger.Warning(err)
+					return
+				}
+				if connectivity == nm.NM_CONNECTIVITY_PORTAL {
+					go m.doPortalAuthentication()
+				}
 			}
-			logger.Debugf("active connection %s state changed %v", sig.Path, state)
-			m.updateActiveConnState(sig.Path, state)
 		}
 	})
 
@@ -196,6 +220,11 @@ func (m *Manager) doHandleVpnNotification(apath dbus.ObjectPath, state, reason u
 	// notification for vpn
 	switch state {
 	case nm.NM_VPN_CONNECTION_STATE_ACTIVATED:
+		// NetworkManager may has bug, VPN activated state is emitted unexpectedly when vpn is disconnected
+		// vpn connected should not notified when reason is disconnected
+		if reason == nm.NM_VPN_CONNECTION_STATE_REASON_USER_DISCONNECTED {
+			return
+		}
 		notifyVpnConnected(aConn.Id)
 	case nm.NM_VPN_CONNECTION_STATE_DISCONNECTED:
 		if aConn.vpnFailed {
@@ -207,6 +236,19 @@ func (m *Manager) doHandleVpnNotification(apath dbus.ObjectPath, state, reason u
 		notifyVpnFailed(aConn.Id, reason)
 		aConn.vpnFailed = true
 	}
+}
+
+func (m *Manager) updateActiveConnSpecificPath(apath dbus.ObjectPath, specificPath dbus.ObjectPath) {
+	m.activeConnectionsLock.Lock()
+	defer m.activeConnectionsLock.Unlock()
+
+	aConn, ok := m.activeConnections[apath]
+	if !ok {
+		return
+	}
+	aConn.SpecificObject = specificPath
+
+	m.updatePropActiveConnections()
 }
 
 func (m *Manager) updateActiveConnState(apath dbus.ObjectPath, state uint32) {
@@ -237,6 +279,7 @@ func (m *Manager) newActiveConnection(path dbus.ObjectPath) (aconn *activeConnec
 	if cpath, err := nmGetConnectionByUuid(aconn.Uuid); err == nil {
 		aconn.Id = nmGetConnectionId(cpath)
 	}
+	aconn.SpecificObject, _ = nmAConn.SpecificObject().Get(0)
 
 	return
 }
@@ -302,11 +345,16 @@ func (m *Manager) doGetActiveConnectionInfo(apath, devPath dbus.ObjectPath) (aci
 		return
 	}
 
-	deviceType, _ := nmDev.DeviceType().Get(0)
+	specificObject, err := nmAConn.SpecificObject().Get(0)
+	if err != nil {
+		return
+	}
+
+	deviceType, _ := nmDev.Device().DeviceType().Get(0)
 	devType = getCustomDeviceType(deviceType)
-	devIfc, _ = nmDev.Interface().Get(0)
+	devIfc, _ = nmDev.Device().Interface().Get(0)
 	if devType == deviceModem {
-		devUdi, _ := nmDev.Udi().Get(0)
+		devUdi, _ := nmDev.Device().Udi().Get(0)
 		mobileNetworkType = mmGetModemMobileNetworkType(dbus.ObjectPath(devUdi))
 	}
 
@@ -406,6 +454,7 @@ func (m *Manager) doGetActiveConnectionInfo(apath, devPath dbus.ObjectPath) (aci
 		IsPrimaryConnection: nmGetPrimaryConnection() == apath,
 		Device:              devPath,
 		SettingPath:         nmConn.Path_(),
+		SpecificObject:      specificObject,
 		ConnectionType:      connType,
 		Protocol:            protocol,
 		ConnectionName:      connName,

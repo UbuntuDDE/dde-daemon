@@ -22,8 +22,8 @@ package timedate
 import (
 	"time"
 
+	"github.com/godbus/dbus"
 	"pkg.deepin.io/dde/daemon/timedate/zoneinfo"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	. "pkg.deepin.io/lib/gettext"
 )
@@ -46,7 +46,14 @@ func (m *Manager) SetDate(year, month, day, hour, min, sec, nsec int32) *dbus.Er
 
 	// microseconds since 1 Jan 1970 UTC
 	us := (t.Unix() * 1000000) + int64(t.Nanosecond()/1000)
-	return m.SetTime(us, false)
+	err1 := m.SetTime(us, false)
+	if err1 == nil {
+		err = m.service.Emit(m, "TimeUpdate")
+		if err != nil {
+			logger.Debug("emit TimeUpdate failed:", err)
+		}
+	}
+	return err1
 }
 
 // Set the system clock to the specified.
@@ -87,8 +94,8 @@ func (m *Manager) SetNTPServer(server string) *dbus.Error {
 	return dbusutil.ToError(err)
 }
 
-func (m *Manager) GetSampleNTPServers() ([]string, *dbus.Error) {
-	var servers = []string{
+func (m *Manager) GetSampleNTPServers() (servers []string, busErr *dbus.Error) {
+	servers = []string{
 		"0.debian.pool.ntp.org",
 		"1.debian.pool.ntp.org",
 		"2.debian.pool.ntp.org",
@@ -132,12 +139,16 @@ func (m *Manager) SetLocalRTC(localRTC, fixSystem bool) *dbus.Error {
 //
 // zone: pass a value like "Asia/Shanghai" to set the timezone.
 func (m *Manager) SetTimezone(zone string) *dbus.Error {
-	if !zoneinfo.IsZoneValid(zone) {
+	ok, err := zoneinfo.IsZoneValid(zone)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+	if !ok {
 		logger.Debug("Invalid zone:", zone)
 		return dbusutil.ToError(zoneinfo.ErrZoneInvalid)
 	}
 
-	err := m.setter.SetTimezone(0, zone,
+	err = m.setter.SetTimezone(0, zone,
 		Tr("Authentication is required to set the system timezone"))
 	if err != nil {
 		logger.Debug("SetTimezone failed:", err)
@@ -149,7 +160,11 @@ func (m *Manager) SetTimezone(zone string) *dbus.Error {
 
 // Add the specified time zone to user time zone list.
 func (m *Manager) AddUserTimezone(zone string) *dbus.Error {
-	if !zoneinfo.IsZoneValid(zone) {
+	ok, err := zoneinfo.IsZoneValid(zone)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+	if !ok {
 		logger.Debug("Invalid zone:", zone)
 		return dbusutil.ToError(zoneinfo.ErrZoneInvalid)
 	}
@@ -164,7 +179,11 @@ func (m *Manager) AddUserTimezone(zone string) *dbus.Error {
 
 // Delete the specified time zone from user time zone list.
 func (m *Manager) DeleteUserTimezone(zone string) *dbus.Error {
-	if !zoneinfo.IsZoneValid(zone) {
+	ok, err := zoneinfo.IsZoneValid(zone)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+	if !ok {
 		logger.Debug("Invalid zone:", zone)
 		return dbusutil.ToError(zoneinfo.ErrZoneInvalid)
 	}
@@ -178,7 +197,7 @@ func (m *Manager) DeleteUserTimezone(zone string) *dbus.Error {
 }
 
 // GetZoneInfo returns the information of the specified time zone.
-func (m *Manager) GetZoneInfo(zone string) (zoneinfo.ZoneInfo, *dbus.Error) {
+func (m *Manager) GetZoneInfo(zone string) (zoneInfo zoneinfo.ZoneInfo, busErr *dbus.Error) {
 	info, err := zoneinfo.GetZoneInfo(zone)
 	if err != nil {
 		logger.Debugf("Get zone info for '%s' failed: %v", zone, err)
@@ -189,6 +208,7 @@ func (m *Manager) GetZoneInfo(zone string) (zoneinfo.ZoneInfo, *dbus.Error) {
 }
 
 // GetZoneList returns all the valid timezones.
-func (m *Manager) GetZoneList() ([]string, *dbus.Error) {
-	return zoneinfo.GetAllZones(), nil
+func (m *Manager) GetZoneList() (zoneList []string, busErr *dbus.Error) {
+	zoneList, err := zoneinfo.GetAllZones()
+	return zoneList, dbusutil.ToError(err)
 }

@@ -22,10 +22,11 @@ package network
 import (
 	"errors"
 	"fmt"
+	"time"
 
+	dbus "github.com/godbus/dbus"
 	nmdbus "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.networkmanager"
 	"pkg.deepin.io/dde/daemon/network/nm"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/utils"
 )
@@ -37,6 +38,16 @@ const (
 	apSecWep
 	apSecPsk
 	apSecEap
+)
+const scanWifiDelayTime = 10 * time.Second
+const channelAutoChangeThreshold = 65
+
+//frequency range
+const (
+	frequency5GUpperlimit = 5825
+	frequency5GLowerlimit = 4915
+	frequency2GUpperlimit = 2484
+	frequency2GLowerlimit = 2412
 )
 
 func (v apSecType) String() string {
@@ -55,7 +66,7 @@ func (v apSecType) String() string {
 }
 
 type accessPoint struct {
-	nmAp    *nmdbus.AccessPoint
+	nmAp    nmdbus.AccessPoint
 	devPath dbus.ObjectPath
 
 	Ssid         string
@@ -63,6 +74,7 @@ type accessPoint struct {
 	SecuredInEap bool
 	Strength     uint8
 	Path         dbus.ObjectPath
+	Frequency    uint32
 }
 
 func (m *Manager) newAccessPoint(devPath, apPath dbus.ObjectPath) (ap *accessPoint, err error) {
@@ -84,63 +96,53 @@ func (m *Manager) newAccessPoint(devPath, apPath dbus.ObjectPath) (ap *accessPoi
 
 	// connect property changed signals
 	ap.nmAp.InitSignalExt(m.sysSigLoop, true)
-	ap.nmAp.AccessPoint().ConnectPropertiesChanged(func(properties map[string]dbus.Variant) {
-		if !m.isAccessPointExists(apPath) {
+	_, err = ap.nmAp.ConnectSignalPropertiesChanged(func(properties map[string]dbus.Variant) {
+		m.accessPointsLock.Lock()
+		defer m.accessPointsLock.Unlock()
+		if !m.isAccessPointExists(devPath, apPath) {
 			return
 		}
 
-		m.accessPointsLock.Lock()
-		defer m.accessPointsLock.Unlock()
-		ignoredBefore := ap.shouldBeIgnore()
 		ap.updateProps()
-		ignoredNow := ap.shouldBeIgnore()
-		apJSON, _ := marshalJSON(ap)
-		if ignoredNow == ignoredBefore {
-			// ignored state not changed, only send properties changed
-			// signal when not ignored
-			if ignoredNow {
-				logger.Debugf("access point(ignored) properties changed %#v", ap)
-			} else {
-				//logger.Debugf("access point properties changed %#v", ap)
-				m.service.Emit(m, "AccessPointPropertiesChanged", string(devPath), apJSON)
-			}
-		} else {
-			// ignored state changed, if became ignored now, send
-			// removed signal or send added signal
-			if ignoredNow {
-				logger.Debugf("access point is ignored %#v", ap)
-				m.service.Emit(m, "AccessPointRemoved", string(devPath), apJSON)
-			} else {
-				logger.Debugf("ignored access point available %#v", ap)
-				m.service.Emit(m, "AccessPointAdded", string(devPath), apJSON)
-			}
-		}
-	})
 
-	if ap.shouldBeIgnore() {
-		logger.Debugf("new access point is ignored %#v", ap)
-	} else {
-		apJSON, _ := marshalJSON(ap)
-		m.service.Emit(m, "AccessPointAdded", string(devPath), apJSON)
+		m.PropsMu.Lock()
+		m.updatePropWirelessAccessPoints()
+		m.PropsMu.Unlock()
+
+	})
+	if err != nil {
+		logger.Warning("failed to monitor changing properties of AccessPoint", err)
+	}
+
+	apJSON, _ := marshalJSON(ap)
+	err1 := m.service.Emit(m, "AccessPointAdded", string(devPath), apJSON)
+	if err1 != nil {
+		logger.Warning("failed to emit signal:", err1)
 	}
 
 	return
 }
+
 func (m *Manager) destroyAccessPoint(ap *accessPoint) {
 	// emit AccessPointRemoved signal
 	apJSON, _ := marshalJSON(ap)
-	m.service.Emit(m, "AccessPointRemoved", string(ap.devPath), apJSON)
+	err := m.service.Emit(m, "AccessPointRemoved", string(ap.devPath), apJSON)
+	if err != nil {
+		logger.Warning("failed to emit signal:", err)
+	}
 	nmDestroyAccessPoint(ap.nmAp)
 }
+
 func (a *accessPoint) updateProps() {
 	ssid, _ := a.nmAp.Ssid().Get(0)
 	a.Ssid = decodeSsid(ssid)
 	a.Secured = getApSecType(a.nmAp) != apSecNone
 	a.SecuredInEap = getApSecType(a.nmAp) == apSecEap
 	a.Strength, _ = a.nmAp.Strength().Get(0)
+	a.Frequency, _ = a.nmAp.Frequency().Get(0)
 }
 
-func getApSecType(ap *nmdbus.AccessPoint) apSecType {
+func getApSecType(ap nmdbus.AccessPoint) apSecType {
 	flags, _ := ap.Flags().Get(0)
 	wpaFlags, _ := ap.WpaFlags().Get(0)
 	rsnFlags, _ := ap.RsnFlags().Get(0)
@@ -163,17 +165,6 @@ func doParseApSecType(flags, wpaFlags, rsnFlags uint32) apSecType {
 		r = apSecEap
 	}
 	return r
-}
-
-// Check if current access point should be ignore in front-end. Hide
-// the access point that strength less than 10 (not include 0 which
-// should be caused by the network driver issue) and not activated.
-func (a *accessPoint) shouldBeIgnore() bool {
-	if a.Strength < 10 && a.Strength != 0 &&
-		!manager.isAccessPointActivated(a.devPath, a.Ssid) {
-		return true
-	}
-	return false
 }
 
 func (m *Manager) isAccessPointActivated(devPath dbus.ObjectPath, ssid string) bool {
@@ -199,13 +190,26 @@ func (m *Manager) clearAccessPoints() {
 	m.accessPoints = make(map[dbus.ObjectPath][]*accessPoint)
 }
 
-func (m *Manager) addAccessPoint(devPath, apPath dbus.ObjectPath) {
-	if m.isAccessPointExists(apPath) {
-		return
+func (m *Manager) initAccessPoints(devPath dbus.ObjectPath, apPaths []dbus.ObjectPath) {
+	accessPoints := make([]*accessPoint, 0, len(apPaths))
+	for _, apPath := range apPaths {
+		ap, err := m.newAccessPoint(devPath, apPath)
+		if err != nil {
+			continue
+		}
+		//logger.Debug("add access point", devPath, apPath)
+		accessPoints = append(accessPoints, ap)
 	}
 
 	m.accessPointsLock.Lock()
-	defer m.accessPointsLock.Unlock()
+	m.accessPoints[devPath] = accessPoints
+	m.accessPointsLock.Unlock()
+}
+
+func (m *Manager) addAccessPoint(devPath, apPath dbus.ObjectPath) {
+	if m.isAccessPointExists(devPath, apPath) {
+		return
+	}
 	ap, err := m.newAccessPoint(devPath, apPath)
 	if err != nil {
 		return
@@ -215,16 +219,13 @@ func (m *Manager) addAccessPoint(devPath, apPath dbus.ObjectPath) {
 }
 
 func (m *Manager) removeAccessPoint(devPath, apPath dbus.ObjectPath) {
-	if !m.isAccessPointExists(apPath) {
+	i := m.getAccessPointIndex(devPath, apPath)
+	if i < 0 {
 		return
 	}
-	devPath, i := m.getAccessPointIndex(apPath)
-
-	m.accessPointsLock.Lock()
-	defer m.accessPointsLock.Unlock()
-	//logger.Debug("remove access point", devPath, apPath)
 	m.accessPoints[devPath] = m.doRemoveAccessPoint(m.accessPoints[devPath], i)
 }
+
 func (m *Manager) doRemoveAccessPoint(aps []*accessPoint, i int) []*accessPoint {
 	m.destroyAccessPoint(aps[i])
 	copy(aps[i:], aps[i+1:])
@@ -233,45 +234,18 @@ func (m *Manager) doRemoveAccessPoint(aps []*accessPoint, i int) []*accessPoint 
 	return aps
 }
 
-func (m *Manager) getAccessPoint(apPath dbus.ObjectPath) (ap *accessPoint) {
-	devPath, i := m.getAccessPointIndex(apPath)
-	if i < 0 {
-		logger.Warning("access point not found", apPath)
-		return
-	}
-
-	m.accessPointsLock.Lock()
-	defer m.accessPointsLock.Unlock()
-	ap = m.accessPoints[devPath][i]
-	return
-}
-func (m *Manager) isAccessPointExists(apPath dbus.ObjectPath) bool {
-	_, i := m.getAccessPointIndex(apPath)
-	if i >= 0 {
-		return true
-	}
-	return false
-}
-func (m *Manager) getAccessPointIndex(apPath dbus.ObjectPath) (devPath dbus.ObjectPath, index int) {
-	m.accessPointsLock.Lock()
-	defer m.accessPointsLock.Unlock()
-	for d, aps := range m.accessPoints {
-		for i, ap := range aps {
-			if ap.Path == apPath {
-				return d, i
-			}
-		}
-	}
-	return "", -1
+func (m *Manager) isAccessPointExists(devPath, apPath dbus.ObjectPath) bool {
+	i := m.getAccessPointIndex(devPath, apPath)
+	return i >= 0
 }
 
-func (m *Manager) isSsidExists(devPath dbus.ObjectPath, ssid string) bool {
-	for _, ap := range m.accessPoints[devPath] {
-		if ap.Ssid == ssid {
-			return true
+func (m *Manager) getAccessPointIndex(devPath, apPath dbus.ObjectPath) int {
+	for i, ap := range m.accessPoints[devPath] {
+		if ap.Path == apPath {
+			return i
 		}
 	}
-	return false
+	return -1
 }
 
 // GetAccessPoints return all access points object which marshaled by json.
@@ -279,19 +253,13 @@ func (m *Manager) GetAccessPoints(path dbus.ObjectPath) (apsJSON string, busErr 
 	m.accessPointsLock.Lock()
 	defer m.accessPointsLock.Unlock()
 	accessPoints := m.accessPoints[path]
-	filteredAccessPoints := make([]*accessPoint, 0, len(m.accessPoints))
-	for _, ap := range accessPoints {
-		if !ap.shouldBeIgnore() {
-			filteredAccessPoints = append(filteredAccessPoints, ap)
-		}
-	}
-	apsJSON, err := marshalJSON(filteredAccessPoints)
+	apsJSON, err := marshalJSON(accessPoints)
 	busErr = dbusutil.ToError(err)
 	return
 }
 
-func (m *Manager) ActivateAccessPoint(uuid string, apPath, devPath dbus.ObjectPath) (dbus.ObjectPath,
-	*dbus.Error) {
+func (m *Manager) ActivateAccessPoint(uuid string, apPath, devPath dbus.ObjectPath) (connection dbus.ObjectPath,
+	busErr *dbus.Error) {
 	var err error
 	cpath, err := m.activateAccessPoint(uuid, apPath, devPath)
 	if err != nil {
@@ -308,7 +276,7 @@ func fixApSecTypeChange(uuid string, secType apSecType) (needUserEdit bool, err 
 		return
 	}
 
-	var conn *nmdbus.ConnectionSettings
+	var conn nmdbus.ConnectionSettings
 	conn, err = nmNewSettingsConnection(cpath)
 	if err != nil {
 		return
@@ -332,13 +300,17 @@ func fixApSecTypeChange(uuid string, secType apSecType) (needUserEdit bool, err 
 
 	switch secType {
 	case apSecNone:
-		logicSetSettingVkWirelessSecurityKeyMgmt(connData, "none")
+		err = logicSetSettingVkWirelessSecurityKeyMgmt(connData, "none")
 	case apSecWep:
-		logicSetSettingVkWirelessSecurityKeyMgmt(connData, "wep")
+		err = logicSetSettingVkWirelessSecurityKeyMgmt(connData, "wep")
 	case apSecPsk:
-		logicSetSettingVkWirelessSecurityKeyMgmt(connData, "wpa-psk")
+		err = logicSetSettingVkWirelessSecurityKeyMgmt(connData, "wpa-psk")
 	case apSecEap:
 		needUserEdit = true
+		return
+	}
+	if err != nil {
+		logger.Debug("failed to set VKWirelessSecutiryKeyMgmt")
 		return
 	}
 
@@ -359,7 +331,7 @@ func (m *Manager) activateAccessPoint(uuid string, apPath, devPath dbus.ObjectPa
 	logger.Debugf("ActivateAccessPoint: uuid=%s, apPath=%s, devPath=%s", uuid, apPath, devPath)
 
 	cpath = "/"
-	var nmAp *nmdbus.AccessPoint
+	var nmAp nmdbus.AccessPoint
 	nmAp, err = nmNewAccessPoint(apPath)
 	if err != nil {
 		return
@@ -393,4 +365,148 @@ func (m *Manager) activateAccessPoint(uuid string, apPath, devPath dbus.ObjectPa
 		}
 	}
 	return
+}
+
+func (m *Manager) DebugChangeAPChannel(band string) *dbus.Error {
+	if band != "a" && band != "bg" {
+		return dbusutil.ToError(errors.New("band input error"))
+	}
+	err := m.RequestWirelessScan()
+	if err != nil {
+		logger.Warning("RequestWirelessScan: ", err)
+		return dbusutil.ToError(err)
+	}
+	m.debugChangeAPBand = band
+	return nil
+}
+
+func (m *Manager) findAPByBand(ssid string, accessPoints []*accessPoint, band string) (apNow *accessPoint) {
+	logger.Debug("findAPByBand:", ssid, band)
+	apNow = nil
+	var strengthMax uint8 = 0
+	for _, ap := range accessPoints {
+		if band == "" {
+			if ap.Ssid == ssid && ap.Strength > strengthMax {
+				apNow = ap
+				strengthMax = ap.Strength
+			}
+		} else {
+			for _, ap := range accessPoints {
+				if ap.Ssid == ssid && band == "a" &&
+					ap.Frequency >= frequency5GLowerlimit &&
+					ap.Frequency <= frequency5GUpperlimit {
+					apNow = ap
+					break
+				} else if ap.Ssid == ssid && band == "bg" &&
+					ap.Frequency >= frequency2GLowerlimit &&
+					ap.Frequency <= frequency2GUpperlimit {
+					apNow = ap
+					break
+				}
+			}
+		}
+	}
+	return
+}
+
+func (m *Manager) getBandByFrequency(freq uint32) (band string) {
+	if freq >= frequency5GLowerlimit &&
+		freq <= frequency5GUpperlimit {
+		band = "a"
+	} else if freq >= frequency2GLowerlimit &&
+		freq <= frequency2GUpperlimit {
+		band = "bg"
+	} else {
+		band = "unknown"
+	}
+	return
+}
+
+func (m *Manager) checkAPStrength() {
+	band := m.debugChangeAPBand
+	m.debugChangeAPBand = ""
+	m.checkAPStrengthTimer = nil
+	logger.Debug("checkAPStrength:")
+	if devices, ok := m.devices[deviceWifi]; ok {
+		for _, dev := range devices {
+			apPath, _ := dev.nmDev.Wireless().ActiveAccessPoint().Get(0)
+			nmAp, _ := nmNewAccessPoint(apPath)
+			frequency, _ := nmAp.Frequency().Get(0)
+			strength, _ := nmAp.Strength().Get(0)
+			ssid, _ := nmAp.Ssid().Get(0)
+
+			aPath, err := dev.nmDev.Device().ActiveConnection().Get(0)
+			if err != nil || !isObjPathValid(aPath) {
+				continue
+			}
+			aConn, err := nmNewActiveConnection(aPath)
+			if err != nil {
+				logger.Error(err)
+				continue
+			}
+
+			state, err := aConn.State().Get(0)
+			if err != nil {
+				logger.Error(err)
+				continue
+			}
+			//当热点还没有连接成功时,不需要切换
+			if state != nm.NM_ACTIVE_CONNECTION_STATE_ACTIVATED {
+				logger.Debug("do not need change if connection not be activated")
+				continue
+			}
+
+			if band == "" {
+				//当前信号比较好，无需切换
+				if strength > channelAutoChangeThreshold && frequency >= frequency5GLowerlimit &&
+					frequency <= frequency5GUpperlimit {
+					continue
+				}
+			}
+
+			apNow := m.findAPByBand(decodeSsid(ssid), m.accessPoints[dev.Path], band)
+			if apNow == nil {
+				logger.Debug("not found AP ")
+				continue
+			}
+			if apNow.Path == apPath {
+				logger.Debug("no need to change AP")
+				continue
+			}
+			logger.Debug("changeAPChanel, apPath:", apPath)
+			if band == "" {
+				// 信号强度改变小于1格，不发生切换
+				if apNow.Strength < strength+20 {
+					continue
+				}
+				if apNow.Frequency >= frequency5GLowerlimit &&
+					apNow.Frequency <= frequency5GUpperlimit {
+					band = "a"
+				} else {
+					band = "bg"
+				}
+			}
+			if band == m.getBandByFrequency(frequency) {
+				logger.Debug("no need to change AP")
+				continue
+			}
+
+			connPath, err := aConn.Connection().Get(0)
+			if err != nil {
+				logger.Error(err)
+				continue
+			}
+			conn := m.getConnection(connPath)
+			err = m.updateConnectionBand(conn, band)
+			if err != nil {
+				logger.Error(err)
+				continue
+			}
+			_, err = m.activateAccessPoint(conn.Uuid, apNow.Path, dev.Path)
+			if err != nil {
+				logger.Error(err)
+				continue
+			}
+		}
+	}
 }

@@ -23,9 +23,9 @@ import (
 	"fmt"
 	"sort"
 
+	dbus "github.com/godbus/dbus"
 	nmdbus "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.networkmanager"
 	"pkg.deepin.io/dde/daemon/network/nm"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	. "pkg.deepin.io/lib/gettext"
 )
@@ -37,12 +37,13 @@ func (c connectionSlice) Less(i, j int) bool { return c[i].Id < c[j].Id }
 func (c connectionSlice) Swap(i, j int)      { c[i], c[j] = c[j], c[i] }
 
 type connection struct {
-	nmConn   *nmdbus.ConnectionSettings
+	nmConn   nmdbus.ConnectionSettings
 	connType string
 
-	Path dbus.ObjectPath
-	Uuid string
-	Id   string
+	Path    dbus.ObjectPath
+	Uuid    string
+	Id      string
+	IfcName string
 
 	// if not empty, the connection will only apply to special device,
 	// works for wired, wireless, infiniband, wimax devices
@@ -77,7 +78,7 @@ func (m *Manager) initConnectionManage() {
 	}
 }
 
-func isTempWiredConnectionSettings(conn *nmdbus.ConnectionSettings, cdata connectionData) (bool, error) {
+func isTempWiredConnectionSettings(conn nmdbus.ConnectionSettings, cdata connectionData) (bool, error) {
 	connType := getSettingConnectionType(cdata)
 	if connType != nm.NM_SETTING_WIRED_SETTING_NAME {
 		return false, nil
@@ -148,6 +149,7 @@ func (conn *connection) updateProps() connectionData {
 
 	conn.Uuid = getSettingConnectionUuid(cdata)
 	conn.Id = getSettingConnectionId(cdata)
+	conn.IfcName = getSettingConnectionInterfaceName(cdata)
 
 	switch getSettingConnectionType(cdata) {
 	case nm.NM_SETTING_GSM_SETTING_NAME, nm.NM_SETTING_CDMA_SETTING_NAME:
@@ -238,7 +240,7 @@ func (m *Manager) removeConnection(cpath dbus.ObjectPath) {
 }
 
 func (m *Manager) doRemoveConnection(conns connectionSlice, i int) connectionSlice {
-	logger.Infof("remove connection %#v", conns[i])
+	logger.Debugf("remove connection %#v", conns[i])
 	m.destroyConnection(conns[i])
 	copy(conns[i:], conns[i+1:])
 	conns = conns[:len(conns)-1]
@@ -255,7 +257,7 @@ func (m *Manager) updateConnection(cpath dbus.ObjectPath) {
 	m.connectionsLock.Lock()
 	defer m.connectionsLock.Unlock()
 	conn.updateProps()
-	logger.Infof("update connection %#v", conn)
+	logger.Debugf("update connection %#v", conn)
 	m.updatePropConnections()
 }
 
@@ -273,10 +275,7 @@ func (m *Manager) getConnection(cpath dbus.ObjectPath) (conn *connection) {
 }
 func (m *Manager) isConnectionExists(cpath dbus.ObjectPath) bool {
 	_, i := m.getConnectionIndex(cpath)
-	if i >= 0 {
-		return true
-	}
-	return false
+	return i >= 0
 }
 func (m *Manager) getConnectionIndex(cpath dbus.ObjectPath) (connType string, index int) {
 	m.connectionsLock.Lock()
@@ -365,7 +364,7 @@ func getNonTempWiredDeviceConnectionUuid(wiredDevPath dbus.ObjectPath) string {
 		return ""
 	}
 
-	apath, err := wired.ActiveConnection().Get(0)
+	apath, err := wired.Device().ActiveConnection().Get(0)
 	if err == nil && isObjPathValid(apath) {
 		aConn, _ := nmNewActiveConnection(apath)
 		if aConn != nil {
@@ -379,7 +378,7 @@ func getNonTempWiredDeviceConnectionUuid(wiredDevPath dbus.ObjectPath) string {
 		}
 	}
 
-	connPaths, _ := wired.AvailableConnections().Get(0)
+	connPaths, _ := wired.Device().AvailableConnections().Get(0)
 	for _, connPath := range connPaths {
 		if !isObjPathValid(connPath) {
 			continue
@@ -398,30 +397,6 @@ func isObjPathValid(dpath dbus.ObjectPath) bool {
 		return false
 	}
 	return true
-}
-
-func getWiredDeviceConnectionUuid(wiredDevPath dbus.ObjectPath) string {
-	wired, _ := nmNewDevice(wiredDevPath)
-	if wired == nil {
-		return ""
-	}
-
-	apath, _ := wired.ActiveConnection().Get(0)
-	if apath != "" && apath != "/" {
-		aconn, _ := nmNewActiveConnection(apath)
-		if aconn != nil {
-			uuid, _ := aconn.Uuid().Get(0)
-			return uuid
-		}
-	}
-
-	list, _ := wired.AvailableConnections().Get(0)
-	if len(list) != 0 && list[0] != "/" {
-		sconn, _ := nmNewSettingsConnection(list[0])
-		settings, _ := sconn.GetSettings(0)
-		return settings["connection"]["uuid"].Value().(string)
-	}
-	return ""
 }
 
 // ensureWirelessHotspotConnectionExists will check if wireless hotspot connection for
@@ -464,6 +439,9 @@ func (m *Manager) ActivateConnection(uuid string, devPath dbus.ObjectPath) (
 	cpath dbus.ObjectPath, busErr *dbus.Error) {
 	cpath, err := m.activateConnection(uuid, devPath)
 	busErr = dbusutil.ToError(err)
+	if err != nil {
+		logger.Debug("failed to activate a connection", err)
+	}
 	return
 }
 
@@ -487,8 +465,41 @@ func (m *Manager) activateConnection(uuid string, devPath dbus.ObjectPath) (cpat
 		}
 		return
 	}
-	m.hasSaveSecret = true
-	m.saveToKeyring = true
+
+	// according to NM API Doc
+	// if the activate connection type is vpn, dev path is ignored, dont need to check device state
+	conn, err := nmNewSettingsConnection(cpath)
+	if err != nil {
+		logger.Warning(err)
+		return
+	}
+	// get setting data
+	connData, err := conn.GetSettings(0)
+	if err != nil {
+		logger.Warning(err)
+		return
+	}
+	// check if type is vpn, if not, should async device state
+	connTyp := getSettingConnectionType(connData)
+	if connTyp != "vpn" {
+		// if need enable device
+		var enabled bool
+		enabled, err = m.getDeviceEnabled(devPath)
+		if err != nil {
+			logger.Warningf("get device enabled state failed, err: %v", err)
+			return
+		}
+		if !enabled {
+			// add new connection but device is disabled, need to update device enabled state as true
+			// but dont need to auto connect ActivateConnection, else may cause unexpected connection
+			err = m.enableDevice(devPath, true, false)
+			if err != nil {
+				logger.Warningf("enable device failed, err: %v", err)
+				return
+			}
+		}
+	}
+
 	_, err = nmActivateConnection(cpath, devPath)
 	return
 }
@@ -577,12 +588,35 @@ func (m *Manager) doDisconnectDevice(devPath dbus.ObjectPath) (err error) {
 		return
 	}
 
-	devState, _ := nmDev.State().Get(0)
+	devState, _ := nmDev.Device().State().Get(0)
 	if isDeviceStateInActivating(devState) {
-		err = nmDev.Disconnect(0)
+		err = nmDev.Device().Disconnect(0)
 		if err != nil {
 			logger.Error(err)
 		}
+	}
+	return
+}
+
+func (m *Manager) updateConnectionBand(conn *connection, band string) (err error) {
+	logger.Debug("updateConnectionBand:", conn, band)
+	cdata, err := conn.nmConn.GetSettings(0)
+	if err != nil {
+		logger.Error(err)
+		return
+	}
+	// fix ipv6 addresses and routes data structure, interface{}
+	if isSettingIP6ConfigAddressesExists(cdata) {
+		setSettingIP6ConfigAddresses(cdata, getSettingIP6ConfigAddresses(cdata))
+	}
+	if isSettingIP6ConfigRoutesExists(cdata) {
+		setSettingIP6ConfigRoutes(cdata, getSettingIP6ConfigRoutes(cdata))
+	}
+	setSettingWirelessBand(cdata, band)
+	err = conn.nmConn.Update(0, cdata)
+	if err != nil {
+		logger.Error(err)
+		return
 	}
 	return
 }

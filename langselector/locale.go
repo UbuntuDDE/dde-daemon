@@ -31,18 +31,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/godbus/dbus"
 	// dbus services:
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.api.localehelper"
+	localehelper "github.com/linuxdeepin/go-dbus-factory/com.deepin.api.localehelper"
 	libnetwork "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.network"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.lastore"
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.notifications"
-
+	lastore "github.com/linuxdeepin/go-dbus-factory/com.deepin.lastore"
+	notifications "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.notifications"
 	"pkg.deepin.io/dde/api/lang_info"
 	"pkg.deepin.io/dde/api/language_support"
 	"pkg.deepin.io/dde/api/userenv"
 	ddbus "pkg.deepin.io/dde/daemon/dbus"
 	"pkg.deepin.io/gir/gio-2.0"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	. "pkg.deepin.io/lib/gettext"
 	"pkg.deepin.io/lib/gsettings"
@@ -51,9 +50,10 @@ import (
 )
 
 const (
-	systemLocaleFile     = "/etc/default/locale"
-	systemdLocaleFile    = "/etc/locale.conf"
-	userLocaleConfigFile = ".config/locale.conf"
+	systemLocaleFile        = "/etc/default/locale"
+	systemdLocaleFile       = "/etc/locale.conf"
+	userLocaleConfigFile    = ".config/locale.conf"
+	userLocaleConfigFileTmp = ".config/.locale.conf"
 
 	defaultLocale = "en_US.UTF-8"
 )
@@ -95,15 +95,16 @@ var (
 var (
 	//save old language notifycation data
 	notifyTxtStartWithInstall string
-	notifyTxtStart string
-	notifyTxtDone string
+	notifyTxtStart            string
+	notifyTxtDone             string
 )
 
 //go:generate dbusutil-gen -type LangSelector locale.go
+//go:generate dbusutil-gen em -type LangSelector
 type LangSelector struct {
 	service      *dbusutil.Service
 	systemBus    *dbus.Conn
-	helper       *localehelper.LocaleHelper
+	helper       localehelper.LocaleHelper
 	localesCache LocaleInfos
 
 	PropsMu sync.RWMutex
@@ -115,15 +116,7 @@ type LangSelector struct {
 	Locales  []string
 	settings *gio.Settings
 
-	methods *struct {
-		SetLocale                  func() `in:"locale"`
-		GetLocaleList              func() `out:"locales"`
-		GetLocaleDescription       func() `in:"locale" out:"description"`
-		GetLanguageSupportPackages func() `in:"locale" out:"packages"`
-		AddLocale                  func() `in:"locale"`
-		DeleteLocale               func() `in:"locale"`
-	}
-
+	//nolint
 	signals *struct {
 		Changed struct {
 			locale string
@@ -261,7 +254,6 @@ func sendNotify(icon, summary, body string) {
 	if err != nil {
 		logger.Warning(err)
 	}
-	return
 }
 
 func isNetworkEnable() (bool, error) {
@@ -315,16 +307,17 @@ func writeUserLocale(locale string) error {
 	}
 
 	localeConfigFile := filepath.Join(homeDir, userLocaleConfigFile)
-	err = writeLocaleEnvFile(locale, localeConfigFile)
+	localeConfigFileTmp := filepath.Join(homeDir, userLocaleConfigFileTmp)
+	err = writeLocaleEnvFile(locale, localeConfigFile, localeConfigFileTmp)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func writeLocaleEnvFile(locale, filename string) error {
-	var content = generateLocaleEnvFile(locale, filename)
-	return ioutil.WriteFile(filename, content, 0644)
+func writeLocaleEnvFile(locale, originFilename string, destFilename string) error {
+	var content = generateLocaleEnvFile(locale, originFilename)
+	return ioutil.WriteFile(destFilename, content, 0644)
 }
 
 func generateLocaleEnvFile(locale, filename string) []byte {
@@ -568,7 +561,7 @@ func (lang *LangSelector) installPackages(pkgs []string) error {
 	}
 	systemBus := lang.systemBus
 	lastoreObj := lastore.NewLastore(systemBus)
-	jobPath, err := lastoreObj.InstallPackage(0, "",
+	jobPath, err := lastoreObj.Manager().InstallPackage(0, "",
 		strings.Join(pkgs, " "))
 	if err != nil {
 		return err

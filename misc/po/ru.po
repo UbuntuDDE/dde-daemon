@@ -4,23 +4,28 @@
 # FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
 # 
 # Translators:
-# Vasile Rusu <basil_russu@hotmail.com>, 2020
+# Артем Рудаковский <crja72@gmail.com>, 2020
 # Transifex Bot <>, 2020
+# Dober Man, 2020
 # Анатолий Валерианович <ffox909@mail.ru>, 2020
-# crja72 <crja72@gmail.com>, 2020
 # Serge Kukharski, 2020
-# Валерий Владимирович, 2020
-# Cindy0514, 2020
-# Владимир Киреев <vovan_kireev@mail.ru>, 2020
+# Basil Russu <basil_russu@hotmail.com>, 2021
+# Artem Kulikov <artem.job.kulikov@gmail.com>, 2021
+# Валерий Владимирович, 2021
+# Cindy0514, 2021
+# Vladislav Evseev <poryvay.vladik@gmail.com>, 2021
+# gandalfthewhite19890404 <gandalfthewhite@mail.ru>, 2021
+# Snow fire R <iceler75@gmail.com>, 2021
+# Владимир Киреев <vovan_kireev@mail.ru>, 2021
 # 
 #, fuzzy
 msgid ""
 msgstr ""
 "Project-Id-Version: PACKAGE VERSION\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2020-06-19 15:53+0800\n"
-"PO-Revision-Date: 2020-05-29 07:18+0000\n"
-"Last-Translator: Владимир Киреев <vovan_kireev@mail.ru>, 2020\n"
+"POT-Creation-Date: 2021-07-20 17:56+0800\n"
+"PO-Revision-Date: 2020-06-08 13:08+0000\n"
+"Last-Translator: Владимир Киреев <vovan_kireev@mail.ru>, 2021\n"
 "Language-Team: Russian (https://www.transifex.com/linuxdeepin/teams/3617/ru/)\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
@@ -40,41 +45,59 @@ msgstr ""
 "Пароль должен содержать Английские буквы (с учетом регистра), цифры или "
 "специальные символы (~!@#$%^&*()[]{}\\|/?,.<>)"
 
-#: ../../accounts/checkers/username.go:63
+#: ../../accounts/checkers/username.go:64
 msgid "Username cannot be empty"
 msgstr "Имя пользователя не может быть пустым"
 
-#: ../../accounts/checkers/username.go:68
+#: ../../accounts/checkers/username.go:69
 msgid "The first character must be a letter or number"
 msgstr "Первый символ должен быть буквой или цифрой"
 
-#: ../../accounts/checkers/username.go:70
+#: ../../accounts/checkers/username.go:72
 msgid "The username already exists"
 msgstr "Имя пользователя уже существует."
 
-#: ../../accounts/checkers/username.go:72
-msgid "The username has been used by system"
-msgstr "Имя пользователя было использовано системой"
+#: ../../accounts/checkers/username.go:75
+msgid "The name already exists"
+msgstr "Имя уже существует."
 
-#: ../../accounts/checkers/username.go:74
+#: ../../accounts/checkers/username.go:77
 msgid "Username must be between 3 and 32 characters"
 msgstr "Имя пользователя должно быть длинной 3-32 символа"
 
-#: ../../appearance/scale.go:66
+#: ../../appearance/scale.go:56
+msgid "Log out for display scaling settings to take effect"
+msgstr ""
+"Выход для того, чтобы настройки масштабирования дисплея вступили в силу"
+
+#: ../../appearance/scale.go:57
 msgid "Set successfully"
 msgstr "Задано успешно"
 
 #: ../../appearance/scale.go:67
-msgid "Please log back in to view the changes"
-msgstr "Пожалуйста, войдите в систему, чтобы просмотреть изменения"
+msgid "Later"
+msgstr "Позже"
 
-#: ../../appearance/scale.go:74
+#: ../../appearance/scale.go:67
+msgid "Log Out Now"
+msgstr "Выход из системы сейчас же"
+
+#: ../../appearance/scale.go:81
+msgid "Setting display scaling"
+msgstr "Настройка масштабирования дисплея"
+
+#: ../../appearance/scale.go:82
 msgid "Display scaling"
 msgstr "Масштабирование дисплея"
 
-#: ../../appearance/scale.go:75
-msgid "Setting display scaling"
-msgstr "Настройка масштабирования дисплея"
+#: ../../audio/audio_events.go:459
+#, c-format
+msgid "%s had been disabled"
+msgstr ""
+
+#: ../../audio/audio_events.go:460 ../../dock/app_entry_menu.go:102
+msgid "Open"
+msgstr "Открыть"
 
 #: ../../bin/dde-authority/fprint_transaction.go:21
 msgid "Fingerprint verification failed"
@@ -84,138 +107,188 @@ msgstr "Ошибка проверки отпечатка пальца"
 msgid "Fingerprint verification timed out"
 msgstr "Время проверки отпечатка пальца вышло"
 
-#: ../../bluetooth/bluez_profile.go:29
+#: ../../bluetooth/bluez_profile.go:30
 msgid "Serial port"
 msgstr "Последовательный порт"
 
-#: ../../bluetooth/bluez_profile.go:30
+#: ../../bluetooth/bluez_profile.go:31
 msgid "Dial-Up networking"
 msgstr "Коммутируемая сеть"
 
-#: ../../bluetooth/bluez_profile.go:31
+#: ../../bluetooth/bluez_profile.go:32
 msgid "Hands-Free device"
 msgstr "Устройство громкой связи"
 
-#: ../../bluetooth/bluez_profile.go:32
+#: ../../bluetooth/bluez_profile.go:33
 msgid "Hands-Free voice gateway"
 msgstr "Голосовой вход громкой связи"
 
-#: ../../bluetooth/bluez_profile.go:33
+#: ../../bluetooth/bluez_profile.go:34
 msgid "Headset voice gateway"
 msgstr "Голосовой вход наушников"
 
-#: ../../bluetooth/bluez_profile.go:34
+#: ../../bluetooth/bluez_profile.go:35
 msgid "Object push"
 msgstr "Загрузка объекта"
 
-#: ../../bluetooth/bluez_profile.go:35
+#: ../../bluetooth/bluez_profile.go:36
 msgid "File transfer"
 msgstr "Передача файлов"
 
-#: ../../bluetooth/bluez_profile.go:36
+#: ../../bluetooth/bluez_profile.go:37
 msgid "Synchronization"
 msgstr "Синхронизация"
 
-#: ../../bluetooth/bluez_profile.go:37
+#: ../../bluetooth/bluez_profile.go:38
 msgid "Phone book access"
 msgstr "Доступ к телефонной книге"
 
-#: ../../bluetooth/bluez_profile.go:38
+#: ../../bluetooth/bluez_profile.go:39
 msgid "Phone book access client"
 msgstr "Клиент доступа к телефонной книге"
 
-#: ../../bluetooth/bluez_profile.go:39
+#: ../../bluetooth/bluez_profile.go:40
 msgid "Message access"
 msgstr "Доступ  к сообщениям"
 
-#: ../../bluetooth/bluez_profile.go:40
+#: ../../bluetooth/bluez_profile.go:41
 msgid "Message notification"
 msgstr "Уведомление о сообщении"
+
+#: ../../bluetooth/obex_agent.go:339 ../../lastore/lastore.go:252
+msgid "Cancel"
+msgstr "Отмена"
+
+#: ../../bluetooth/obex_agent.go:346
+msgid "Receiving %q from %q"
+msgstr ""
+
+#: ../../bluetooth/obex_agent.go:355
+msgid "View"
+msgstr "Просмотр"
+
+#: ../../bluetooth/obex_agent.go:361
+msgid "You have received files from %q successfully"
+msgstr "Получение файлов из %q  успешно завершено"
+
+#: ../../bluetooth/obex_agent.go:362
+msgid "Done"
+msgstr "Готово"
+
+#: ../../bluetooth/obex_agent.go:377 ../../bluetooth/obex_agent.go:476
+msgid "Stop Receiving Files"
+msgstr "Остановить получение файлов"
+
+#: ../../bluetooth/obex_agent.go:379
+msgid "You have cancelled the file transfer"
+msgstr "Вы прервали процесс отправки файла"
+
+#: ../../bluetooth/obex_agent.go:381 ../../bluetooth/utils_notify.go:113
+#: ../../bluetooth/utils_notify.go:118
+msgid "Bluetooth connection failed"
+msgstr "Bluetooth-подключение не удалось"
+
+#: ../../bluetooth/obex_agent.go:416
+msgid "Decline"
+msgstr "Отказаться"
+
+#: ../../bluetooth/obex_agent.go:416
+msgid "Receive"
+msgstr "Получить"
+
+#: ../../bluetooth/obex_agent.go:421
+msgid "Bluetooth File Transfer"
+msgstr "Передача файлов по Bluetooth"
+
+#: ../../bluetooth/obex_agent.go:422
+msgid "%q wants to send files to you. Receive?"
+msgstr "%q  хочет отправить вам файлы. Принять?"
+
+#: ../../bluetooth/obex_agent.go:477
+msgid "Receiving %q timed out"
+msgstr "Время получения %q  истекло"
 
 #: ../../bluetooth/utils_notify.go:98
 msgid "Connect %q successfully"
 msgstr "%q соединено успешно"
 
-#: ../../bluetooth/utils_notify.go:102 ../../network/utils_notify.go:185
-#: ../../network/utils_notify.go:189 ../../network/utils_notify.go:193
-#: ../../network/utils_notify.go:197 ../../network/utils_notify.go:215
-#: ../../network/utils_notify.go:218 ../../network/utils_notify.go:307
-msgid "Disconnected"
-msgstr "Отключено"
+#: ../../bluetooth/utils_notify.go:103 ../../network/state_handler.go:335
+#: ../../network/state_handler.go:357
+msgid "%q disconnected"
+msgstr "%q отсоединено"
 
-#: ../../bluetooth/utils_notify.go:106
+#: ../../bluetooth/utils_notify.go:108
 msgid "Make sure %q is turned on and in range"
 msgstr "Убедитесь, что %q включено и доступно"
 
-#: ../../bluetooth/utils_notify.go:111
-msgid "Bluetooth connection failed"
-msgstr "Bluetooth-подключение не удалось"
+#: ../../bluetooth/utils_notify.go:117
+msgid ""
+"%q can no longer connect to %q. Try to forget this device and pair it again."
+msgstr ""
+"%q больше не может подключено к %q. Попробуйте забыть это устройство и снова"
+" выполнить сопряжение."
 
-#: ../../bluetooth/utils_notify.go:139
+#: ../../bluetooth/utils_notify.go:151
 msgid "Click here to connect to %q"
 msgstr "Нажмите здесь, что подсоединиться к %q"
 
-#: ../../bluetooth/utils_notify.go:140
+#: ../../bluetooth/utils_notify.go:152
 msgid "Add Bluetooth devices"
 msgstr "Добавить Bluetooth устройство"
 
-#: ../../bluetooth/utils_notify.go:150
+#: ../../bluetooth/utils_notify.go:162
 msgid "Pair"
 msgstr "Пара"
 
-#: ../../calendar/job.go:514 ../../calendar/job.go:521
+#: ../../calendar/job.go:509 ../../calendar/job.go:516
 msgid "today"
 msgstr "сегодня"
 
-#: ../../calendar/job.go:516 ../../calendar/job.go:523
+#: ../../calendar/job.go:511 ../../calendar/job.go:518
 msgid "tomorrow"
 msgstr "завтра"
 
-#: ../../calendar/job.go:536
+#: ../../calendar/job.go:531
 #, c-format
 msgid "%s to %s"
 msgstr "с %s до %s"
 
-#: ../../calendar/module.go:127 ../../calendar/type.go:25
+#: ../../calendar/module.go:118 ../../calendar/type.go:25
 msgid "Work"
 msgstr "Работа"
 
-#: ../../calendar/module.go:128 ../../calendar/type.go:30
+#: ../../calendar/module.go:119 ../../calendar/type.go:30
 msgid "Life"
 msgstr "Семья"
 
-#: ../../calendar/module.go:129 ../../calendar/type.go:35
+#: ../../calendar/module.go:120 ../../calendar/type.go:35
 msgid "Other"
 msgstr "Другое"
 
-#: ../../calendar/scheduler.go:495
+#: ../../calendar/scheduler.go:570
 msgid "One day before start"
 msgstr "За день до начала"
 
-#: ../../calendar/scheduler.go:496 ../../calendar/scheduler.go:501
-#: ../../calendar/scheduler.go:509 ../../calendar/scheduler.go:513
+#: ../../calendar/scheduler.go:571 ../../calendar/scheduler.go:576
+#: ../../calendar/scheduler.go:584 ../../calendar/scheduler.go:588
 msgid "Close"
 msgstr "Закрыть"
 
-#: ../../calendar/scheduler.go:500
+#: ../../calendar/scheduler.go:575
 msgid "Remind me tomorrow"
 msgstr "Напомнить мне завтра"
 
-#: ../../calendar/scheduler.go:508
+#: ../../calendar/scheduler.go:583
 msgid "Remind me later"
 msgstr "Напомнить мне позже"
 
-#: ../../calendar/scheduler.go:518
+#: ../../calendar/scheduler.go:593
 msgid "Schedule Reminder"
 msgstr "Расписание Напоминания"
 
 #: ../../calendar/type.go:40
 msgid "Festival"
 msgstr "Фестиваль"
-
-#: ../../dock/app_entry_menu.go:102
-msgid "Open"
-msgstr "Открыть"
 
 #: ../../dock/app_entry_menu.go:109
 msgid "Close All"
@@ -225,15 +298,15 @@ msgstr "Закрыть Всё"
 msgid "Force Quit"
 msgstr "Принудительный Выход"
 
-#: ../../dock/app_entry_menu.go:132
+#: ../../dock/app_entry_menu.go:135
 msgid "Dock"
 msgstr "Док"
 
-#: ../../dock/app_entry_menu.go:139
+#: ../../dock/app_entry_menu.go:145
 msgid "Undock"
 msgstr "Открепить"
 
-#: ../../dock/app_entry_menu.go:146
+#: ../../dock/app_entry_menu.go:155
 msgid "All Windows"
 msgstr "Все Окна"
 
@@ -243,7 +316,7 @@ msgstr "Недостаточно места на диске, пожалуйст�
 
 #: ../../keybinding/shortcuts/id_name_map.go:28
 msgid "Launcher"
-msgstr "Выбор Программ"
+msgstr "Запуск программ"
 
 #: ../../keybinding/shortcuts/id_name_map.go:29
 msgid "Terminal"
@@ -421,15 +494,15 @@ msgstr "Показать окна текущего рабочего стола"
 msgid "Display workspace"
 msgstr "Отобразить рабочий стол"
 
-#: ../../keybinding/shortcuts/id_name_map.go:210
+#: ../../keybinding/shortcuts/id_name_map.go:214
 msgid "Switch monitors"
-msgstr ""
+msgstr "Переключить мониторы"
 
 #: ../../langselector/locale.go:63
 msgid "Authentication is required to switch language"
 msgstr "Для изменения языка системы требуется аутентификация"
 
-#: ../../langselector/locale.go:159
+#: ../../langselector/locale.go:152
 msgid ""
 "Changing system language and installing the required language packages, "
 "please wait..."
@@ -437,67 +510,55 @@ msgstr ""
 "Изменяется язык системы и устанавливаются недостающие языковые пакеты, "
 "пожалуйста подождите…"
 
-#: ../../langselector/locale.go:160
+#: ../../langselector/locale.go:153
 msgid "Changing system language, please wait..."
 msgstr "Изменяется язык системы, пожалуйста подождите..."
 
-#: ../../langselector/locale.go:161
+#: ../../langselector/locale.go:154
 msgid "System language changed, please log out and then log in"
 msgstr ""
 " Язык системы был изменен, пожалуйста выйдите из системы и войдите вновь…"
 
-#: ../../langselector/locale.go:403
+#: ../../langselector/locale.go:396
 msgid "Failed to change system language, please try later"
 msgstr "Не удалось изменить язык системы, попробуйте позже."
 
-#: ../../lastore/lastore.go:248
+#: ../../lastore/lastore.go:244
 msgid "Retry"
 msgstr "Повторить"
 
-#: ../../lastore/lastore.go:256
-msgid "Cancel"
-msgstr "Отмена"
-
-#: ../../lastore/lastore.go:270
+#: ../../lastore/lastore.go:266
 msgid "Update Now"
 msgstr "Обновить Сейчас"
 
-#: ../../lastore/notify.go:97
+#: ../../lastore/notify.go:96
 msgid "%q installed successfully."
 msgstr "%q успешно установлен."
 
-#: ../../lastore/notify.go:100
+#: ../../lastore/notify.go:99
 msgid "%q failed to install."
 msgstr "%q установить не удалось."
 
-#: ../../lastore/notify.go:108
+#: ../../lastore/notify.go:107
 msgid "Removed successfully"
 msgstr "Успешно удалено"
 
-#: ../../lastore/notify.go:110
+#: ../../lastore/notify.go:109
 msgid "Failed to remove the app"
 msgstr "Не удалось удалить приложение"
 
-#: ../../lastore/notify.go:117
+#: ../../lastore/notify.go:116
 msgid ""
 "In order to prevent automatic shutdown, please plug in for normal update."
 msgstr ""
 "Чтобы избежать автоматического отключения, подключите для нормального "
 "обновления."
 
-#: ../../lastore/notify.go:122
+#: ../../lastore/notify.go:121
 msgid "Package cache wiped"
 msgstr "Сброс кэша пакета"
 
-#: ../../lastore/notify.go:127
-msgid ""
-"Your system source has been modified, please restore to official source for "
-"your normal use"
-msgstr ""
-"Ваш источник приложений системы был изменен, пожалуйста, восстановите "
-"официальный источник для нормального использования"
-
-#: ../../lastore/notify.go:132
+#: ../../lastore/notify.go:126
 msgid "New system edition available"
 msgstr "Обнаружена новая версия системы"
 
@@ -509,509 +570,465 @@ msgstr "%q успешно удалён"
 msgid "Failed to uninstall %q"
 msgstr "Не удалось удалить %q"
 
-#: ../../network/manager_active_conn.go:351
-#: ../../network/manager_active_conn.go:356
+#: ../../network/manager.go:362
+msgid "Wired connection"
+msgstr "Проводное соединение"
+
+#: ../../network/manager_active_conn.go:399
+#: ../../network/manager_active_conn.go:404
 msgid "None"
 msgstr "Ничего"
 
-#: ../../network/manager_active_conn.go:358
+#: ../../network/manager_active_conn.go:406
 msgid "WEP 40/128-bit Key"
 msgstr "WEP 40/128-бит. ключ"
 
-#: ../../network/manager_active_conn.go:360
+#: ../../network/manager_active_conn.go:408
 msgid "WPA/WPA2 Personal"
 msgstr "Персональный WPA/WPA2"
 
-#: ../../network/manager_active_conn.go:368
+#: ../../network/manager_active_conn.go:416
 msgid "TLS"
 msgstr "TLS"
 
-#: ../../network/manager_active_conn.go:370
+#: ../../network/manager_active_conn.go:418
 msgid "MD5"
 msgstr "MD5"
 
-#: ../../network/manager_active_conn.go:372
+#: ../../network/manager_active_conn.go:420
 msgid "LEAP"
 msgstr "LEAP"
 
-#: ../../network/manager_active_conn.go:374
+#: ../../network/manager_active_conn.go:422
 msgid "FAST"
 msgstr "FAST"
 
-#: ../../network/manager_active_conn.go:376
+#: ../../network/manager_active_conn.go:424
 msgid "Tunneled TLS"
 msgstr "Туннельный TLS "
 
-#: ../../network/manager_active_conn.go:378
+#: ../../network/manager_active_conn.go:426
 msgid "Protected EAP"
 msgstr "Защищенный EAP"
 
-#: ../../network/manager_connection.go:337 ../../network/nm_custom_type.go:225
+#: ../../network/manager_connection.go:336
 msgid "Wired Connection"
 msgstr "Проводное Соединение"
 
-#: ../../network/nm_custom_type.go:223
-msgid "Connection"
-msgstr "Соединение"
+#: ../../network/proxychains/utils_notify.go:45
+msgid "Application proxy is set successfully"
+msgstr "Прокси-сервер приложения успешно установлен"
 
-#: ../../network/nm_custom_type.go:227
-msgid "Wireless Connection"
-msgstr "Беспроводное Соединение"
+#: ../../network/proxychains/utils_notify.go:45
+#: ../../network/proxychains/utils_notify.go:48
+#: ../../network/utils_notify.go:197 ../../network/utils_notify.go:201
+#: ../../network/utils_notify.go:204
+msgid "Network"
+msgstr "Сеть"
 
-#: ../../network/nm_custom_type.go:229
-msgid "Wireless Ad-Hoc"
-msgstr "Беспроводный Ad-Hoc"
+#: ../../network/proxychains/utils_notify.go:48
+msgid "Failed to set the application proxy"
+msgstr "Не удалось установить прокси-сервер приложения"
 
-#: ../../network/nm_custom_type.go:231
-msgid "Wireless Ap-Hotspot"
-msgstr "Беспроводной Ap-Hotspot"
-
-#: ../../network/nm_custom_type.go:233
-msgid "PPPoE Connection"
-msgstr "PPPoE-подключение"
-
-#: ../../network/nm_custom_type.go:235
-msgid "Mobile Connection"
-msgstr "Мобильное подключение"
-
-#: ../../network/nm_custom_type.go:237
-msgid "Mobile GSM Connection"
-msgstr "Мобильное GSM-подключение"
-
-#: ../../network/nm_custom_type.go:239
-msgid "Mobile CDMA Connection"
-msgstr "Мобильное CDMA-подключение"
-
-#: ../../network/nm_custom_type.go:241
-msgid "VPN Connection"
-msgstr "VPN-подключение"
-
-#: ../../network/nm_custom_type.go:243
-msgid "VPN L2TP"
-msgstr "VPN L2TP"
-
-#: ../../network/nm_custom_type.go:245
-msgid "VPN OpenConnect"
-msgstr "VPN OpenConnect"
-
-#: ../../network/nm_custom_type.go:247
-msgid "VPN OpenVPN"
-msgstr "VPN OpenVPN"
-
-#: ../../network/nm_custom_type.go:249
-msgid "VPN PPTP"
-msgstr "VPN PPTP"
-
-#: ../../network/nm_custom_type.go:251
-msgid "VPN StrongSwan"
-msgstr "VPN StrongSwan"
-
-#: ../../network/nm_custom_type.go:253
-msgid "VPN VPNC"
-msgstr "VPN VPNC"
-
-#: ../../network/state_handler.go:39
+#: ../../network/state_handler.go:38
 msgid "Device state changed"
 msgstr "Состояние устройства изменилось"
 
-#: ../../network/state_handler.go:40
+#: ../../network/state_handler.go:39
 msgid "Device state changed, reason unknown"
 msgstr "Состояние устройства изменилось по неизвестной причине"
 
-#: ../../network/state_handler.go:41
+#: ../../network/state_handler.go:40
 msgid "The device is now managed"
 msgstr "Теперь устройство управляется."
 
-#: ../../network/state_handler.go:42
+#: ../../network/state_handler.go:41
 msgid "The device is no longer managed"
 msgstr "Устройство больше не управляется."
 
-#: ../../network/state_handler.go:43
+#: ../../network/state_handler.go:42
 msgid "The device has not been ready for configuration"
 msgstr "Устройство не готово для настройки."
 
-#: ../../network/state_handler.go:44
+#: ../../network/state_handler.go:43
 msgid ""
 "IP configuration could not be reserved (no available address, timeout, etc)"
 msgstr "IP не был зарезервирован (не доступный адрес, тайм-аут, и т.д.)"
 
-#: ../../network/state_handler.go:45
+#: ../../network/state_handler.go:44
 msgid "The IP configuration is no longer valid"
 msgstr "IP конфигурация более не верна."
 
-#: ../../network/state_handler.go:46
+#: ../../network/state_handler.go:45
 msgid "Passwords were required but not provided"
 msgstr "Пароли были запрошены, но это не предусматривалось."
 
-#: ../../network/state_handler.go:47
+#: ../../network/state_handler.go:46
 msgid ""
 "The 802.1X supplicant disconnected from the access point or authentication "
 "server"
 msgstr "Запрос 802.1X отклонен точкой доступа или сервером аутентификации"
 
-#: ../../network/state_handler.go:48
+#: ../../network/state_handler.go:47
 msgid "Configuration of the 802.1X supplicant failed"
 msgstr "Запрос конфигурации 802.1X неудачен."
 
-#: ../../network/state_handler.go:49
+#: ../../network/state_handler.go:48
 msgid "The 802.1X supplicant quitted or failed unexpectedly"
 msgstr "Время запроса 802.1X вышло или прервано."
 
-#: ../../network/state_handler.go:50
+#: ../../network/state_handler.go:49
 msgid "The 802.1X supplicant took too long time to authenticate"
 msgstr "Время запроса 802.1X на подлинность занимает слишком много времени."
 
-#: ../../network/state_handler.go:51
+#: ../../network/state_handler.go:50
 msgid "The PPP service failed to start within the allowed time"
 msgstr "PPP-сервис не удалось запустить за отведённое время."
 
-#: ../../network/state_handler.go:52
+#: ../../network/state_handler.go:51
 msgid "The PPP service disconnected unexpectedly"
 msgstr "PPP-сервис неожиданно отключён."
 
-#: ../../network/state_handler.go:53
+#: ../../network/state_handler.go:52
 msgid "The PPP service quitted or failed unexpectedly"
 msgstr "PPP-сервис остановлен или неожиданно прерван."
 
-#: ../../network/state_handler.go:54
+#: ../../network/state_handler.go:53
 msgid "The DHCP service failed to start within the allowed time"
 msgstr "DHCP-сервис не удалось запустить за отведённое время."
 
-#: ../../network/state_handler.go:55
+#: ../../network/state_handler.go:54
 msgid "The DHCP service reported an unexpected error"
 msgstr " DHCP-сервис сообщает о непредвиденной ошибке."
 
-#: ../../network/state_handler.go:56
+#: ../../network/state_handler.go:55
 msgid "The DHCP service quitted or failed unexpectedly"
 msgstr "DHCP-сервис остановлен или неожиданно прерван."
 
-#: ../../network/state_handler.go:57
+#: ../../network/state_handler.go:56
 msgid "The shared connection service failed to start"
 msgstr "Не удалось запустить сервис общих подключений."
 
-#: ../../network/state_handler.go:58
+#: ../../network/state_handler.go:57
 msgid "The shared connection service quitted or failed unexpectedly"
 msgstr "Сервис общих подключений остановлен или неожиданно прерван."
 
-#: ../../network/state_handler.go:59
+#: ../../network/state_handler.go:58
 msgid "The AutoIP service failed to start"
 msgstr "Запуск AutoIP-сервиса неудачен."
 
-#: ../../network/state_handler.go:60
+#: ../../network/state_handler.go:59
 msgid "The AutoIP service reported an unexpected error"
 msgstr "AutoIP-сервис сообщает о непредвиденной ошибке."
 
-#: ../../network/state_handler.go:61
+#: ../../network/state_handler.go:60
 msgid "The AutoIP service quitted or failed unexpectedly"
 msgstr "AutoIP-сервис остановлен или неожиданно прерван."
 
-#: ../../network/state_handler.go:62
+#: ../../network/state_handler.go:61
 msgid "Dialing failed due to busy lines"
 msgstr "Дозвон не удался из-за занятой  линии."
 
-#: ../../network/state_handler.go:63
+#: ../../network/state_handler.go:62
 msgid "Dialing failed due to no dial tone"
 msgstr "Набор номера не удался - отсутствует гудок."
 
-#: ../../network/state_handler.go:64
+#: ../../network/state_handler.go:63
 msgid "Dialing failed due to the carrier"
 msgstr "Набор номера не удался из-за провайдера."
 
-#: ../../network/state_handler.go:65
+#: ../../network/state_handler.go:64
 msgid "Dialing timed out"
 msgstr "Время набора номера истекло."
 
-#: ../../network/state_handler.go:66
+#: ../../network/state_handler.go:65
 msgid "Dialing failed"
 msgstr "Набор номера неудачен."
 
-#: ../../network/state_handler.go:67
+#: ../../network/state_handler.go:66
 msgid "Modem initialization failed"
 msgstr "Инициализировать модем не удалось."
 
-#: ../../network/state_handler.go:68
+#: ../../network/state_handler.go:67
 msgid "Failed to select the specified GSM APN"
 msgstr "Не удалось выбрать указанный GSM APN."
 
-#: ../../network/state_handler.go:69
+#: ../../network/state_handler.go:68
 msgid "No networks searched"
 msgstr "Сети не найдены."
 
-#: ../../network/state_handler.go:70
+#: ../../network/state_handler.go:69
 msgid "Network registration was denied"
 msgstr "Регистрации в сети было отказано."
 
-#: ../../network/state_handler.go:71
+#: ../../network/state_handler.go:70
 msgid "Network registration timed out"
 msgstr "Время регистрации в сети истекло."
 
-#: ../../network/state_handler.go:72
+#: ../../network/state_handler.go:71
 msgid "Failed to register to the requested GSM network"
 msgstr "Регистрация для запрашиваемой GSM сети не удалась."
 
-#: ../../network/state_handler.go:73
+#: ../../network/state_handler.go:72
 msgid "PIN check failed"
 msgstr "Проверка PIN не удалась!"
 
-#: ../../network/state_handler.go:74
+#: ../../network/state_handler.go:73
 msgid "Necessary firmware for the device may be missed"
 msgstr "Необходимая микропрограмма для устройства возможно отсутствует."
 
-#: ../../network/state_handler.go:75
+#: ../../network/state_handler.go:74
 msgid "The device was removed"
 msgstr "Устройство было удалено."
 
-#: ../../network/state_handler.go:76
+#: ../../network/state_handler.go:75
 msgid "NetworkManager went to sleep"
 msgstr "Менеджер сети перешел в режим сна."
 
-#: ../../network/state_handler.go:77
+#: ../../network/state_handler.go:76
 msgid "The device's active connection was removed or disappeared"
 msgstr "Активные соединения устройства были отключены или удалены."
 
-#: ../../network/state_handler.go:78
+#: ../../network/state_handler.go:77
 msgid "A user or client requested to disconnect"
 msgstr "Пользователь или клиент сделал запрос на отключение"
 
-#: ../../network/state_handler.go:79
+#: ../../network/state_handler.go:78
 msgid "The device's carrier/link changed"
 msgstr "Устройство carrier/link изменилось"
 
-#: ../../network/state_handler.go:80
+#: ../../network/state_handler.go:79
 msgid "The device's existing connection was assumed"
 msgstr "Существующее соединение устройства предполагалось."
 
-#: ../../network/state_handler.go:81
+#: ../../network/state_handler.go:80
 msgid "The 802.1x supplicant is now available"
 msgstr "Запрос 802.1x теперь возможен."
 
-#: ../../network/state_handler.go:82
+#: ../../network/state_handler.go:81
 msgid "The modem could not be found"
 msgstr "Модем не может быть найден."
 
-#: ../../network/state_handler.go:83
+#: ../../network/state_handler.go:82
 msgid "The Bluetooth connection timed out or failed"
 msgstr "Тайм-аут или разрыв Bluetooth-подключения."
 
-#: ../../network/state_handler.go:84
+#: ../../network/state_handler.go:83
 msgid "GSM Modem's SIM Card was not inserted"
 msgstr "В GSM-модем не вставлена SIM-карта."
 
-#: ../../network/state_handler.go:85
+#: ../../network/state_handler.go:84
 msgid "GSM Modem's SIM PIN required"
 msgstr "GSM модем требует  PIN-код SIM."
 
-#: ../../network/state_handler.go:86
+#: ../../network/state_handler.go:85
 msgid "GSM Modem's SIM PUK required"
 msgstr "GSM модем требует PUK SIM-карты."
 
-#: ../../network/state_handler.go:87
+#: ../../network/state_handler.go:86
 msgid "SIM card error in GSM Modem"
 msgstr "Ошибка SIM-карты в GSM-модеме"
 
-#: ../../network/state_handler.go:88
+#: ../../network/state_handler.go:87
 msgid "InfiniBand device does not support connected mode"
 msgstr "Устройство InfiniBand не поддерживает установленный режим."
 
-#: ../../network/state_handler.go:89
+#: ../../network/state_handler.go:88
 msgid "A dependency of the connection failed"
 msgstr "Вторичное соединение не удалось."
 
-#: ../../network/state_handler.go:90
+#: ../../network/state_handler.go:89
 msgid "RFC 2684 Ethernet bridging error to ADSL"
 msgstr "Ошибка RFC 2684 в Ethernet-мосте ADSL"
 
-#: ../../network/state_handler.go:91
+#: ../../network/state_handler.go:90
 msgid "ModemManager did not run or quitted unexpectedly"
 msgstr "Менеджер модемов не запущен или неожиданно отключен."
 
-#: ../../network/state_handler.go:92
+#: ../../network/state_handler.go:91
 msgid "The 802.11 WLAN network could not be found"
 msgstr "802.11 WLAN-сеть не может быть найдена."
 
-#: ../../network/state_handler.go:93
+#: ../../network/state_handler.go:92
 msgid "A secondary connection of the base connection failed"
 msgstr "Вторичное подключение базового соединения не удалось."
 
-#: ../../network/state_handler.go:96
+#: ../../network/state_handler.go:95
 msgid "DCB or FCoE setup failed"
 msgstr "Неудачная установка DCB или FCoE."
 
-#: ../../network/state_handler.go:97
+#: ../../network/state_handler.go:96
 msgid "Network teaming control failed"
 msgstr "Управление объединением сети не удалось."
 
-#: ../../network/state_handler.go:98
+#: ../../network/state_handler.go:97
 msgid "Modem failed to run or not available"
 msgstr "Модем недоступен или не готов к работе."
 
-#: ../../network/state_handler.go:99
+#: ../../network/state_handler.go:98
 msgid "Modem now ready and available"
 msgstr "Модем готов и доступен."
 
-#: ../../network/state_handler.go:100
+#: ../../network/state_handler.go:99
 msgid "SIM PIN is incorrect"
 msgstr "Не верный SIM PIN."
 
-#: ../../network/state_handler.go:101
+#: ../../network/state_handler.go:100
 msgid "New connection activation is enqueuing"
 msgstr "Активация нового соединения в очереди."
 
-#: ../../network/state_handler.go:102
+#: ../../network/state_handler.go:101
 msgid "Parent device changed"
 msgstr "Родительское устройство изменено."
 
-#: ../../network/state_handler.go:103
+#: ../../network/state_handler.go:102
 msgid "Management status of parent device changed"
 msgstr "Статус управления родительского устройства изменён."
 
-#: ../../network/state_handler.go:106
+#: ../../network/state_handler.go:105
 msgid "Network cable is unplugged"
 msgstr "Сетевой кабель отключен!"
 
-#: ../../network/state_handler.go:107
+#: ../../network/state_handler.go:106
 msgid "Please make sure SIM card has been inserted with mobile network signal"
 msgstr "Убедитесь, что вставлена SIM-карта с сигналом мобильной сети."
 
-#: ../../network/state_handler.go:108
+#: ../../network/state_handler.go:107
 msgid ""
 "Please make sure a correct plan was selected without arrearage of SIM card"
 msgstr ""
 "Убедитесь, что выбран верный тариф и отсутствует задолженность SIM-карты."
 
-#: ../../network/state_handler.go:111
+#: ../../network/state_handler.go:110
 msgid "Failed to activate VPN connection, reason unknown"
 msgstr "Активация VPN-соединения не удалась по неизвестной причине"
 
-#: ../../network/state_handler.go:112
+#: ../../network/state_handler.go:111
 msgid "Failed to activate VPN connection"
 msgstr "Активация VPN-соединения не удалась."
 
-#: ../../network/state_handler.go:113
+#: ../../network/state_handler.go:112
 msgid "The VPN connection state changed due to being disconnected by users"
 msgstr "Изменено состояние VPN-соединения из-за отключения пользователей."
 
-#: ../../network/state_handler.go:114
+#: ../../network/state_handler.go:113
 msgid ""
 "The VPN connection state changed due to being disconnected from devices"
 msgstr "Изменено состояние VPN-соединения из-за отключения от устройств."
 
-#: ../../network/state_handler.go:115
+#: ../../network/state_handler.go:114
 msgid "VPN service stopped"
 msgstr "VPN-сервис остановлен."
 
-#: ../../network/state_handler.go:116
+#: ../../network/state_handler.go:115
 msgid "The IP config of VPN connection was invalid"
 msgstr "IP конфигурация VPN-подключения неверна."
 
-#: ../../network/state_handler.go:117
+#: ../../network/state_handler.go:116
 msgid "The connection attempt to VPN service timed out"
 msgstr "Время попытки подключения VPN-сервиса истекло."
 
-#: ../../network/state_handler.go:118
+#: ../../network/state_handler.go:117
 msgid "The VPN service start timed out"
 msgstr "Время запуска VPN-сервиса истекло."
 
-#: ../../network/state_handler.go:119
+#: ../../network/state_handler.go:118
 msgid "The VPN service failed to start"
 msgstr "Невозможно запустить  VPN-сервис."
 
-#: ../../network/state_handler.go:120
+#: ../../network/state_handler.go:119
 msgid "The VPN connection password was not provided"
 msgstr "Пароль для подключения к VPN не был предоставлен."
 
-#: ../../network/state_handler.go:121
+#: ../../network/state_handler.go:120
 msgid "Authentication to VPN server failed"
 msgstr "Аутентификация на VPN-сервере не удалась."
 
-#: ../../network/state_handler.go:122
+#: ../../network/state_handler.go:121
 msgid "The connection was deleted from settings"
 msgstr "Соединение было удалено из настроек."
 
-#: ../../network/state_handler.go:251
+#: ../../network/state_handler.go:252
 msgid "Enabling hotspot"
 msgstr "Включение точки доступа"
 
-#: ../../network/state_handler.go:253
+#: ../../network/state_handler.go:256
 msgid "Connecting %q"
 msgstr "Подключение %q"
 
-#: ../../network/state_handler.go:261
+#: ../../network/state_handler.go:265
 msgid "Hotspot enabled"
 msgstr "Точка доступа включена"
 
-#: ../../network/state_handler.go:263
+#: ../../network/state_handler.go:267
 msgid "%q connected"
 msgstr "%q соединено"
 
-#: ../../network/state_handler.go:274 ../../network/state_handler.go:329
+#: ../../network/state_handler.go:278 ../../network/state_handler.go:333
 msgid "Hotspot disabled"
 msgstr "Точка доступа отключена"
 
-#: ../../network/state_handler.go:331 ../../network/state_handler.go:355
-msgid "%q disconnected"
-msgstr "%q отсоединено"
-
-#: ../../network/state_handler.go:337
+#: ../../network/state_handler.go:341
 msgid "Unable to share hotspot, please check dnsmasq settings"
 msgstr "Не удалось предоставить точку доступа, проверьте настройки dnsmasq"
 
-#: ../../network/state_handler.go:339
+#: ../../network/state_handler.go:343
 msgid "Unable to connect %q, please keep closer to the wireless router"
 msgstr ""
 "Не удалось соединить %q, пожалуйста держитесь ближе к беспроводному "
 "маршрутизатору."
 
-#: ../../network/state_handler.go:341
+#: ../../network/state_handler.go:345
 msgid "Unable to connect %q, please check your router or net cable."
 msgstr ""
 "Не удалось соединить %q, пожалуйста проверьте ваш беспроводной маршрутизатор"
 " или сетевой кабель."
 
-#: ../../network/state_handler.go:344
-msgid "Password is required to connect %q"
-msgstr "Для подключения к %q требуется пароль"
-
-#: ../../network/state_handler.go:347
+#: ../../network/state_handler.go:349
 msgid "Connection failed, unable to connect %q, wrong password"
 msgstr "Не удалось подключиться, не удалось соединить %q, неправильный пароль"
 
-#: ../../network/utils_dbus_nm.go:271
+#: ../../network/state_handler.go:360
+msgid "Password is required to connect %q"
+msgstr "Для подключения к %q требуется пароль"
+
+#: ../../network/state_handler.go:362
+msgid "The %q 802.11 WLAN network could not be found"
+msgstr "%q 802.11 WLAN сеть не найдена"
+
+#: ../../network/utils_dbus_nm.go:297
 msgid "Unknown"
 msgstr "Неизвестный"
 
 #: ../../network/utils_notify.go:185
-msgid "You are now offline."
-msgstr "Теперь Вы в автономном режиме."
-
-#: ../../network/utils_notify.go:189
 msgid "Airplane mode enabled."
 msgstr "Включен режим полёта."
 
-#: ../../network/utils_notify.go:197
+#: ../../network/utils_notify.go:185 ../../network/utils_notify.go:189
+#: ../../network/utils_notify.go:193 ../../network/utils_notify.go:211
+#: ../../network/utils_notify.go:214 ../../network/utils_notify.go:303
+msgid "Disconnected"
+msgstr "Отключено"
+
+#: ../../network/utils_notify.go:193
 msgid "Access Point mode is not supported by this device."
 msgstr "Режим точки доступа не поддерживается этим устройством."
 
-#: ../../network/utils_notify.go:201 ../../network/utils_notify.go:205
-#: ../../network/utils_notify.go:208
-msgid "Network"
-msgstr "Сеть"
-
-#: ../../network/utils_notify.go:201
+#: ../../network/utils_notify.go:197
 msgid ""
 "The hardware switch of WLAN Card is off, please switch on as necessary."
 msgstr ""
 "Аппаратный переключатель WLAN-карты выключен, включите если требуется."
 
-#: ../../network/utils_notify.go:205
+#: ../../network/utils_notify.go:201
 msgid "System proxy is set successfully."
 msgstr "Системный прокси установлен успешно."
 
-#: ../../network/utils_notify.go:208
+#: ../../network/utils_notify.go:204
 msgid "System proxy has been cancelled."
 msgstr "Системный прокси был отменен."
 
-#: ../../network/utils_notify.go:212
+#: ../../network/utils_notify.go:208
 msgid "Connected"
 msgstr "Подключено"
 
@@ -1022,54 +1039,55 @@ msgstr ""
 "\"%s\" не прошел проверку безопасности системы и не может быть запущен "
 "сейчас"
 
-#: ../../session/power/manager_events.go:183
+#: ../../session/power/manager_events.go:201
 msgid "Battery critically low"
 msgstr "Критически низкий заряд батареи"
 
-#: ../../session/power/manager_events.go:204
-#: ../../session/power/manager_events.go:209
-#: ../../session/power/manager_events.go:214
+#: ../../session/power/manager_events.go:222
+#: ../../session/power/manager_events.go:227
+#: ../../session/power/manager_events.go:232
 msgid "Battery low, please plug in"
 msgstr "Низкий заряд батареи, пожалуйста подключите питание"
 
-#: ../../session/power/utils.go:357 ../../session/power/utils.go:361
-#: ../../session/power/utils.go:365 ../../session/power/utils.go:369
+#: ../../session/power/utils.go:378 ../../session/power/utils.go:382
+#: ../../session/power/utils.go:386 ../../session/power/utils.go:390
 msgid "Power settings changed"
 msgstr "Настройки питания изменены"
 
-#: ../../session/power/utils.go:384
+#: ../../session/power/utils.go:405 ../../session/power/utils_test.go:12
+#: ../../session/power/utils_test.go:13
 msgid "When the lid is closed, "
 msgstr "Когда крышка закрыта,"
 
-#: ../../session/power/utils.go:388
+#: ../../session/power/utils.go:409
 msgid "When pressing the power button, "
 msgstr "При нажатии на кнопку питания,"
 
-#: ../../session/power/utils.go:398
+#: ../../session/power/utils.go:419 ../../session/power/utils_test.go:12
 msgid "your computer will shut down"
 msgstr "Ваш компьютер выключится"
 
-#: ../../session/power/utils.go:400
+#: ../../session/power/utils.go:421 ../../session/power/utils_test.go:13
 msgid "your computer will suspend"
 msgstr "Ваш компьютер перейдет в режим ожидания"
 
-#: ../../session/power/utils.go:402
+#: ../../session/power/utils.go:423
 msgid "your computer will hibernate"
-msgstr ""
+msgstr "Ваш компьютер будет находится в спящем режиме"
 
-#: ../../session/power/utils.go:404
+#: ../../session/power/utils.go:425
 msgid "your monitor will turn off"
 msgstr "Ваш монитор будет выключен"
 
-#: ../../session/power/utils.go:406
+#: ../../session/power/utils.go:427
 msgid "it will do nothing to your computer"
 msgstr "Ничего не делать с компьютером"
 
-#: ../../timedate/manager_ifc.go:59
+#: ../../timedate/manager_ifc.go:66
 msgid "Authentication is required to set the system time"
 msgstr "Для установки системного времени требуется аутентификация."
 
-#: ../../timedate/manager_ifc.go:72
+#: ../../timedate/manager_ifc.go:79
 msgid ""
 "Authentication is required to control whether network time synchronization "
 "shall be enabled"
@@ -1077,11 +1095,11 @@ msgstr ""
 "Для управления включением синхронизации времени по сети требуется "
 "аутентификация."
 
-#: ../../timedate/manager_ifc.go:82
+#: ../../timedate/manager_ifc.go:89
 msgid "Authentication is required to change NTP server"
 msgstr "Для смены NTP-сервера требуется аутентификация"
 
-#: ../../timedate/manager_ifc.go:122
+#: ../../timedate/manager_ifc.go:129
 msgid ""
 "Authentication is required to control whether the RTC stores the local or "
 "UTC time"
@@ -1089,6 +1107,6 @@ msgstr ""
 "Аутентификация требуется для контроля того, сохраняет ли RTC местное время "
 "или время UTC."
 
-#: ../../timedate/manager_ifc.go:141
+#: ../../timedate/manager_ifc.go:148
 msgid "Authentication is required to set the system timezone"
 msgstr "Для установки часового пояса системы требуется аутентификация"

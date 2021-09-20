@@ -62,7 +62,7 @@ type Mouse struct {
 	DoubleClick   gsprop.Int `prop:"access:rw"`
 	DragThreshold gsprop.Int `prop:"access:rw"`
 
-	devInfos dxMouses
+	devInfos Mouses
 	setting  *gio.Settings
 	touchPad *Touchpad
 }
@@ -90,6 +90,9 @@ func newMouse(service *dbusutil.Service, touchPad *Touchpad) *Mouse {
 }
 
 func (m *Mouse) init() {
+	//触摸板和鼠标都是用mouse的doubleClick，检测到只有触摸板时也同步到xsettings
+	m.syncConfigToXsettings()
+
 	if !m.Exist {
 		tpad := m.touchPad
 		if tpad.Exist && tpad.TPadEnable.Get() {
@@ -115,7 +118,7 @@ func (m *Mouse) handleDeviceChanged() {
 }
 
 func (m *Mouse) updateDXMouses() {
-	m.devInfos = dxMouses{}
+	m.devInfos = Mouses{}
 	for _, info := range getMouseInfos(false) {
 		if info.TrackPoint {
 			continue
@@ -269,4 +272,8 @@ func (m *Mouse) doubleClick() {
 
 func (m *Mouse) dragThreshold() {
 	xsSetInt32(xsPropDragThres, m.DragThreshold.Get())
+}
+
+func (m *Mouse) syncConfigToXsettings() {
+	m.doubleClick() // 初始化时,将默认配置同步到xsettings中
 }

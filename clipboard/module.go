@@ -1,7 +1,7 @@
 package clipboard
 
 import (
-	"github.com/linuxdeepin/go-x11-client"
+	x "github.com/linuxdeepin/go-x11-client"
 	"github.com/linuxdeepin/go-x11-client/ext/xfixes"
 	"pkg.deepin.io/dde/daemon/loader"
 	"pkg.deepin.io/lib/log"
@@ -30,7 +30,7 @@ func (*Module) GetDependencies() []string {
 	return nil
 }
 
-func (*Module) Start() error {
+func (mo *Module) Start() error {
 	logger.Debug("clipboard module start")
 
 	xConn, err := x.NewConn()

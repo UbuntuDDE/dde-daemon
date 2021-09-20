@@ -20,7 +20,7 @@
 package network
 
 import (
-	"pkg.deepin.io/lib/dbus1"
+	dbus "github.com/godbus/dbus"
 )
 
 func getSettingKey(data connectionData, section, key string) (value interface{}) {
@@ -97,16 +97,12 @@ func isSettingKeyExists(data connectionData, section, key string) bool {
 	}
 
 	_, ok = sectionData[key]
-	if !ok {
-		return false
-	}
-
-	return true
+	return ok
 }
 
 func addSetting(data connectionData, setting string) {
 	var settingData map[string]dbus.Variant
-	settingData, ok := data[setting]
+	_, ok := data[setting]
 	if !ok {
 		// add setting if not exists
 		settingData = make(map[string]dbus.Variant)

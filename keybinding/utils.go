@@ -22,28 +22,31 @@ package keybinding
 import (
 	"bytes"
 	"errors"
-	x "github.com/linuxdeepin/go-x11-client"
-	"github.com/linuxdeepin/go-x11-client/ext/dpms"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 
+	dbus "github.com/godbus/dbus"
 	wm "github.com/linuxdeepin/go-dbus-factory/com.deepin.wm"
-	"pkg.deepin.io/dde/daemon/keybinding/util"
-	"pkg.deepin.io/lib/strv"
+	"github.com/linuxdeepin/go-x11-client/ext/dpms"
 
-	"pkg.deepin.io/gir/gio-2.0"
-	"pkg.deepin.io/lib/dbus1"
+	"pkg.deepin.io/dde/daemon/keybinding/util"
+	gio "pkg.deepin.io/gir/gio-2.0"
+	"pkg.deepin.io/lib/strv"
 )
 
-func getPowerButtonPressedExec() string {
-	s := gio.NewSettings("com.deepin.dde.power")
-	defer s.Unref()
-	return s.GetString("power-button-pressed-exec")
-}
+// nolint
+const (
+	suspendStateUnknown = iota + 1
+	suspendStateFinish
+	suspendStateWakeup
+	suspendStateLidOpen
+	suspendStatePrepare
+	suspendStateLidClose
+	suspendStateButtonClick
+)
 
 func resetGSettings(gs *gio.Settings) {
 	for _, key := range gs.ListKeys() {
@@ -56,13 +59,13 @@ func resetGSettings(gs *gio.Settings) {
 	}
 }
 
-func resetKWin(wmObj *wm.Wm) error {
+func resetKWin(wmObj wm.Wm) error {
 	accels, err := util.GetAllKWinAccels(wmObj)
 	if err != nil {
 		return err
 	}
 	for _, accel := range accels {
-		//logger.Debug("resetKwin each accel:", accel.Id, accel.Keystrokes, accel.DefaultKeystrokes)
+		// logger.Debug("resetKwin each accel:", accel.Id, accel.Keystrokes, accel.DefaultKeystrokes)
 		if !strv.Strv(accel.Keystrokes).Equal(accel.DefaultKeystrokes) &&
 			len(accel.DefaultKeystrokes) > 0 && accel.DefaultKeystrokes[0] != "" {
 			accelJson, err := util.MarshalJSON(&util.KWinAccel{
@@ -98,48 +101,102 @@ func showOSD(signal string) {
 const sessionManagerDest = "com.deepin.SessionManager"
 const sessionManagerObjPath = "/com/deepin/SessionManager"
 
-func systemSuspend() {
-	sessionDBus, _ := dbus.SessionBus()
-	go sessionDBus.Object(sessionManagerDest, sessionManagerObjPath).Call(sessionManagerDest+".RequestSuspend", 0)
-}
-
-func (m *Manager) systemHibernate() {
-	if os.Getenv("POWER_CAN_SLEEP") == "0" {
-		logger.Info("can not Hibernate, env POWER_CAN_SLEEP == 0")
-		return
-	}
-	can, err := m.sessionManager.CanHibernate(0)
+func systemLock() {
+	sessionDBus, err := dbus.SessionBus()
 	if err != nil {
 		logger.Warning(err)
 		return
 	}
+	go sessionDBus.Object(sessionManagerDest, sessionManagerObjPath).Call(sessionManagerDest+".RequestLock", 0)
+}
 
-	if !can {
+func (m *Manager) canSuspend() bool {
+	can, err := m.sessionManager.CanSuspend(0) // 当前能否待机
+	if err != nil {
+		logger.Warning(err)
+		return false
+	}
+	return can
+}
+
+func (m *Manager) systemSuspend() {
+	if !m.canSuspend() {
+		logger.Info("can not suspend")
+		return
+	}
+
+	logger.Debug("suspend")
+	err := m.sessionManager.RequestSuspend(0)
+	if err != nil {
+		logger.Warning("failed to suspend:", err)
+	}
+}
+
+// 为了处理待机闪屏的问题，通过前端进行待机，前端会在待机前显示一个纯黑的界面
+func (m *Manager) systemSuspendByFront() {
+	if !m.canSuspend() {
+		logger.Info("can not suspend")
+		return
+	}
+
+	logger.Debug("suspend")
+	err := m.shutdownFront.Suspend(0)
+	if err != nil {
+		logger.Warning("failed to suspend:", err)
+	}
+}
+
+func (m *Manager) canHibernate() bool {
+	can, err := m.sessionManager.CanHibernate(0) // 能否休眠
+	if err != nil {
+		logger.Warning(err)
+		return false
+	}
+	return can
+}
+
+func (m *Manager) systemHibernate() {
+	if !m.canHibernate() {
 		logger.Info("can not Hibernate")
 		return
 	}
 
 	logger.Debug("Hibernate")
-	err = m.sessionManager.RequestHibernate(0)
+	err := m.sessionManager.RequestHibernate(0)
 	if err != nil {
 		logger.Warning("failed to Hibernate:", err)
 	}
 }
 
-func (m *Manager) systemShutdown() {
-	can, err := m.sessionManager.CanShutdown(0)
-	if err != nil {
-		logger.Warning(err)
+func (m *Manager) systemHibernateByFront() {
+	if !m.canHibernate() {
+		logger.Info("can not Hibernate")
 		return
 	}
 
-	if !can {
+	logger.Debug("Hibernate")
+	err := m.shutdownFront.Hibernate(0)
+	if err != nil {
+		logger.Warning("failed to Hibernate:", err)
+	}
+}
+
+func (m *Manager) canShutdown() bool {
+	can, err := m.sessionManager.CanShutdown(0) // 当前能否关机
+	if err != nil {
+		logger.Warning(err)
+		return false
+	}
+	return can
+}
+
+func (m *Manager) systemShutdown() {
+	if !m.canShutdown() {
 		logger.Info("can not Shutdown")
 		return
 	}
-
 	logger.Debug("Shutdown")
-	err = m.sessionManager.RequestShutdown(0)
+	err := m.sessionManager.RequestShutdown(0)
 	if err != nil {
 		logger.Warning("failed to Shutdown:", err)
 	}
@@ -159,28 +216,42 @@ func (m *Manager) systemTurnOffScreen() {
 		m.doLock(true)
 	}
 
+	doPrepareSuspend()
 	if useWayland {
 		err = exec.Command("dde_wldpms", "-s", "Off").Run()
 	} else {
-		xConn, err := x.NewConn()
-		if err != nil {
-			logger.Error(err)
-		}
-		err = dpms.ForceLevelChecked(xConn, dpms.DPMSModeOff).Check(xConn)
+		err = dpms.ForceLevelChecked(m.conn, dpms.DPMSModeOff).Check(m.conn)
 	}
 	if err != nil {
 		logger.Warning("Set DPMS off error:", err)
 	}
+	undoPrepareSuspend()
 }
 
-func systemLogout() {
-	sessionDBus, _ := dbus.SessionBus()
-	go sessionDBus.Object(sessionManagerDest, sessionManagerObjPath).Call(sessionManagerDest+".RequestLogout", 0)
+func (m *Manager) systemLogout() {
+	can, err := m.sessionManager.CanLogout(0)
+	if err != nil {
+		logger.Warning(err)
+		return
+	}
+
+	if !can {
+		logger.Info("can not logout")
+		return
+	}
+
+	logger.Debug("logout")
+	err = m.sessionManager.RequestLogout(0)
+	if err != nil {
+		logger.Warning("failed to logout:", err)
+	}
 }
 
-func systemAway() {
-	sessionDBus, _ := dbus.SessionBus()
-	go sessionDBus.Object(sessionManagerDest, sessionManagerObjPath).Call(sessionManagerDest+".RequestLock", 0)
+func (m *Manager) systemAway() {
+	err := m.sessionManager.RequestLock(0)
+	if err != nil {
+		logger.Warning(err)
+	}
 }
 
 func queryCommandByMime(mime string) string {
@@ -191,52 +262,6 @@ func queryCommandByMime(mime string) string {
 	defer app.Unref()
 
 	return app.GetExecutable()
-}
-
-const (
-	ibmHotkeyFile = "/proc/acpi/ibm/hotkey"
-)
-
-var driverSupportedHotkey = func() func() bool {
-	var (
-		init      bool = false
-		supported bool = false
-	)
-
-	return func() bool {
-		if !init {
-			init = true
-			supported = checkIBMHotkey(ibmHotkeyFile)
-		}
-		return supported
-	}
-}()
-
-func checkIBMHotkey(file string) bool {
-	content, err := ioutil.ReadFile(file)
-	if err != nil {
-		return false
-	}
-
-	lines := strings.Split(string(content), "\n")
-	for _, line := range lines {
-		if len(line) == 0 {
-			continue
-		}
-		list := strings.Split(line, ":")
-		if len(list) != 2 {
-			continue
-		}
-
-		if list[0] != "status" {
-			continue
-		}
-
-		if strings.TrimSpace(list[1]) == "enabled" {
-			return true
-		}
-	}
-	return false
 }
 
 func getRfkillWlanState() (int, error) {
@@ -278,7 +303,6 @@ func readTinyFile(file string) ([]byte, error) {
 	defer f.Close()
 	buf := make([]byte, 8)
 	n, err := f.Read(buf)
-
 	if err != nil {
 		return nil, err
 	}
@@ -295,5 +319,23 @@ func (m *Manager) doLock(autoStartAuth bool) {
 	err := m.lockFront.ShowAuth(0, autoStartAuth)
 	if err != nil {
 		logger.Warning("failed to call lockFront ShowAuth:", err)
+	}
+}
+
+func doPrepareSuspend() {
+	sessionDBus, _ := dbus.SessionBus()
+	obj := sessionDBus.Object("com.deepin.daemon.Power", "/com/deepin/daemon/Power")
+	err := obj.Call("com.deepin.daemon.Power.SetPrepareSuspend", 0, suspendStateButtonClick).Err
+	if err != nil {
+		logger.Warning(err)
+	}
+}
+
+func undoPrepareSuspend() {
+	sessionDBus, _ := dbus.SessionBus()
+	obj := sessionDBus.Object("com.deepin.daemon.Power", "/com/deepin/daemon/Power")
+	err := obj.Call("com.deepin.daemon.Power.SetPrepareSuspend", 0, suspendStateFinish).Err
+	if err != nil {
+		logger.Warning(err)
 	}
 }

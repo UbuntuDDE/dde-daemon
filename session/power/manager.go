@@ -24,15 +24,19 @@ import (
 	"sync"
 	"syscall"
 
+	dbus "github.com/godbus/dbus"
+	display "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.display"
+	systemPower "github.com/linuxdeepin/go-dbus-factory/com.deepin.system.power"
 	"pkg.deepin.io/dde/daemon/common/dsync"
 	"pkg.deepin.io/dde/daemon/session/common"
-	"pkg.deepin.io/gir/gio-2.0"
-	dbus "pkg.deepin.io/lib/dbus1"
+	gio "pkg.deepin.io/gir/gio-2.0"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/gsprop"
 )
 
 //go:generate dbusutil-gen -type Manager manager.go
+//go:generate dbusutil-gen em -type Manager,WarnLevelConfigManager
+
 type Manager struct {
 	service              *dbusutil.Service
 	sessionSigLoop       *dbusutil.SignalLoop
@@ -40,12 +44,14 @@ type Manager struct {
 	syncConfig           *dsync.Config
 	helper               *Helper
 	settings             *gio.Settings
-	isSuspending         bool
 	warnLevelCountTicker *countTicker
 	warnLevelConfig      *WarnLevelConfigManager
 	submodules           map[string]submodule
 	inhibitor            *sleepInhibitor
 	inhibitFd            dbus.UnixFD
+	systemPower          systemPower.Power
+	display              display.Display
+	lightSensorEnabled   bool
 
 	PropsMu sync.RWMutex
 	// 是否有盖子，一般笔记本电脑才有
@@ -120,15 +126,21 @@ type Manager struct {
 	savingModeBrightnessDropPercent gsprop.Int // 用来接收和保存来自system power中降低的屏幕亮度值
 
 	AmbientLightAdjustBrightness gsprop.Bool `prop:"access:rw"`
-	ambientLightClaimed          bool
-	lightLevelUnit               string
-	lidSwitchState               uint
-	sessionActive                bool
+
+	ambientLightClaimed bool
+	lightLevelUnit      string
+	lidSwitchState      uint
+	sessionActive       bool
 
 	// if prepare suspend, ignore idle off
 	prepareSuspend       int
 	prepareSuspendLocker sync.Mutex
+
+	// 是否支持高性能模式
+	IsHighPerformanceSupported bool
 }
+
+var _manager *Manager
 
 func newManager(service *dbusutil.Service) (*Manager, error) {
 	systemBus, err := dbus.SystemBus()
@@ -176,6 +188,7 @@ func newManager(service *dbusutil.Service) (*Manager, error) {
 	m.initGSettingsConnectChanged()
 	m.AmbientLightAdjustBrightness.Bind(m.settings,
 		settingKeyAmbientLightAdjuestBrightness)
+	m.lightSensorEnabled = m.settings.GetBoolean(settingLightSensorEnabled)
 
 	power := m.helper.Power
 	err = common.ActivateSysDaemonService(power.ServiceName_())
@@ -194,10 +207,13 @@ func newManager(service *dbusutil.Service) (*Manager, error) {
 	}
 
 	logger.Info("LidIsPresent", m.LidIsPresent)
-	m.HasAmbientLightSensor, _ = helper.SensorProxy.HasAmbientLight().Get(0)
-	logger.Debug("HasAmbientLightSensor:", m.HasAmbientLightSensor)
-	if m.HasAmbientLightSensor {
-		m.lightLevelUnit, _ = helper.SensorProxy.LightLevelUnit().Get(0)
+
+	if m.lightSensorEnabled {
+		m.HasAmbientLightSensor, _ = helper.SensorProxy.HasAmbientLight().Get(0)
+		logger.Debug("HasAmbientLightSensor:", m.HasAmbientLightSensor)
+		if m.HasAmbientLightSensor {
+			m.lightLevelUnit, _ = helper.SensorProxy.LightLevelUnit().Get(0)
+		}
 	}
 
 	m.sessionActive, _ = helper.SessionWatcher.IsActive().Get(0)
@@ -206,6 +222,16 @@ func newManager(service *dbusutil.Service) (*Manager, error) {
 	m.BatteryIsPresent = make(map[string]bool)
 	m.BatteryPercentage = make(map[string]float64)
 	m.BatteryState = make(map[string]uint32)
+
+	// 初始化电源模式
+	m.systemPower = systemPower.NewPower(systemBus)
+	m.IsHighPerformanceSupported, err = m.systemPower.IsBoostSupported().Get(0)
+	if err != nil {
+		logger.Warning(err)
+	}
+
+	// 绑定com.deepin.daemon.Display的DBus
+	m.display = display.NewDisplay(sessionBus)
 
 	return m, nil
 }
@@ -224,7 +250,7 @@ func (m *Manager) init() {
 	m.helper.initSignalExt(m.systemSigLoop, m.sessionSigLoop)
 
 	// init sleep inhibitor
-	m.inhibitor = newSleepInhibitor(m.helper.LoginManager)
+	m.inhibitor = newSleepInhibitor(m.helper.LoginManager, m.helper.Daemon)
 	m.inhibitor.OnBeforeSuspend = m.handleBeforeSuspend
 	m.inhibitor.OnWakeup = m.handleWakeup
 	err := m.inhibitor.block()
@@ -242,34 +268,44 @@ func (m *Manager) init() {
 		logger.Warning(err)
 	}
 
-	err = m.helper.SensorProxy.LightLevel().ConnectChanged(func(hasValue bool, value float64) {
-		if !hasValue {
-			return
+	if m.lightSensorEnabled {
+		err = m.helper.SensorProxy.LightLevel().ConnectChanged(func(hasValue bool, value float64) {
+			if !hasValue {
+				return
+			}
+			m.handleLightLevelChanged(value)
+		})
+		if err != nil {
+			logger.Warning(err)
 		}
-		m.handleLightLevelChanged(value)
-	})
-	if err != nil {
-		logger.Warning(err)
 	}
 
 	_, err = m.helper.SysDBusDaemon.ConnectNameOwnerChanged(
 		func(name string, oldOwner string, newOwner string) {
-			serviceName := m.helper.SensorProxy.ServiceName_()
-			if name == serviceName && newOwner != "" {
-				logger.Debug("sensorProxy restarted")
-				hasSensor, _ := m.helper.SensorProxy.HasAmbientLight().Get(0)
-				var lightLevelUnit string
-				if hasSensor {
-					lightLevelUnit, _ = m.helper.SensorProxy.LightLevelUnit().Get(0)
+			if m.lightSensorEnabled {
+				serviceName := m.helper.SensorProxy.ServiceName_()
+				if name == serviceName && newOwner != "" {
+					logger.Debug("sensorProxy restarted")
+					hasSensor, _ := m.helper.SensorProxy.HasAmbientLight().Get(0)
+					var lightLevelUnit string
+					if hasSensor {
+						lightLevelUnit, _ = m.helper.SensorProxy.LightLevelUnit().Get(0)
+					}
+
+					m.PropsMu.Lock()
+					m.setPropHasAmbientLightSensor(hasSensor)
+					m.ambientLightClaimed = false
+					m.lightLevelUnit = lightLevelUnit
+					m.PropsMu.Unlock()
+
+					m.claimOrReleaseAmbientLight()
 				}
-
-				m.PropsMu.Lock()
-				m.setPropHasAmbientLightSensor(hasSensor)
-				m.ambientLightClaimed = false
-				m.lightLevelUnit = lightLevelUnit
-				m.PropsMu.Unlock()
-
-				m.claimOrReleaseAmbientLight()
+			}
+			if name == m.helper.LoginManager.ServiceName_() && oldOwner != "" && newOwner == "" {
+				if m.prepareSuspend == suspendStatePrepare {
+					logger.Info("auto handleWakeup if systemd-logind coredump")
+					m.handleWakeup()
+				}
 			}
 		})
 	if err != nil {
@@ -294,31 +330,10 @@ func (m *Manager) init() {
 
 	m.warnLevelConfig.setChangeCallback(m.handleBatteryDisplayUpdate)
 
-	m.initPowerModule()
-
 	m.initOnBatteryChangedHandler()
 	m.initSubmodules()
 	m.startSubmodules()
 	m.inhibitLogind()
-}
-
-func (m *Manager) initPowerModule() {
-	init := m.settings.GetBoolean(settingKeyPowerModuleInitialized)
-	if !init {
-		// TODO: 也许有更好的判断台式机的方法
-		power := m.helper.Power
-		hasBattery, err := power.HasBattery().Get(0)
-		if err != nil {
-			logger.Warning(err)
-		} else {
-			if !hasBattery {
-				// 无电池，判断为台式机, 设置待机为 从不
-				m.LinePowerSleepDelay.Set(0)
-				m.BatterySleepDelay.Set(0)
-			}
-		}
-		m.settings.SetBoolean(settingKeyPowerModuleInitialized, true)
-	}
 }
 
 func (m *Manager) isX11SessionActive() (bool, error) {
@@ -404,4 +419,9 @@ func (m *Manager) permitLogind() {
 		}
 		m.inhibitFd = -1
 	}
+}
+
+func (m *Manager) SetPrepareSuspend(suspendState int) *dbus.Error {
+	m.setPrepareSuspend(suspendState)
+	return nil
 }

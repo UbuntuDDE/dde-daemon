@@ -16,11 +16,11 @@ type Module struct {
 	*loader.ModuleBase
 }
 
-func (m Module) GetDependencies() []string {
+func (m *Module) GetDependencies() []string {
 	return nil
 }
 
-func (m Module) Start() error {
+func (m *Module) Start() error {
 	if m.m != nil {
 		return nil
 	}
@@ -35,12 +35,29 @@ func (m Module) Start() error {
 	if err != nil {
 		return err
 	}
-	//init get memory
-	go m.m.calculateMemoryViaLshw()
+	go func() {
+		//init get memory
+		err = m.m.calculateMemoryViaLshw()
+		if err != nil {
+			logger.Warning(err)
+		}
+		//get system bit
+		systemType := 64
+		if "64" != m.m.systemBit() {
+			systemType = 32
+		}
+		//Get CPU MHZ
+		currentSpeed, err1 := GetCurrentSpeed(systemType)
+		if err1 != nil {
+			logger.Warning(err1)
+			return
+		}
+		m.m.setPropCurrentSpeed(currentSpeed)
+	}()
 	return nil
 }
 
-func (m Module) Stop() error {
+func (m *Module) Stop() error {
 	return nil
 }
 

@@ -21,14 +21,19 @@ package network
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
 
+	dbus "github.com/godbus/dbus"
+	nmdbus "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.networkmanager"
 	"pkg.deepin.io/dde/daemon/iw"
-	"pkg.deepin.io/lib/dbus1"
+	"pkg.deepin.io/dde/daemon/network/nm"
 	"pkg.deepin.io/lib/utils"
 )
 
@@ -39,37 +44,6 @@ func isStringInArray(s string, list []string) bool {
 		}
 	}
 	return false
-}
-
-func stringArrayBut(list []string, ignoreList ...string) (newList []string) {
-	for _, s := range list {
-		if !isStringInArray(s, ignoreList) {
-			newList = append(newList, s)
-		}
-	}
-	return
-}
-
-func appendStrArrayUnique(a1 []string, a2 ...string) (a []string) {
-	a = a1
-	for _, s := range a2 {
-		if !isStringInArray(s, a) {
-			a = append(a, s)
-		}
-	}
-	return
-}
-
-func removeStrArray(a1 []string, a2 ...string) (a []string) {
-	for _, s := range a2 {
-		for _, v := range a1 {
-			if v == s {
-				continue
-			}
-			a = append(a, v)
-		}
-	}
-	return
 }
 
 func isDBusPathInArray(path dbus.ObjectPath, pathList []dbus.ObjectPath) bool {
@@ -85,21 +59,6 @@ func isInterfaceNil(v interface{}) bool {
 	return utils.IsInterfaceNil(v)
 }
 
-func isInterfaceEmpty(v interface{}) bool {
-	if isInterfaceNil(v) {
-		return true
-	}
-	switch v.(type) {
-	case [][]interface{}: // ipv6Addresses
-		if vd, ok := v.([][]interface{}); ok {
-			if len(vd) == 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func marshalJSON(v interface{}) (jsonStr string, err error) {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -107,25 +66,6 @@ func marshalJSON(v interface{}) (jsonStr string, err error) {
 		return
 	}
 	jsonStr = string(b)
-	return
-}
-
-func unmarshalJSON(jsonStr string, v interface{}) (err error) {
-	err = json.Unmarshal([]byte(jsonStr), &v)
-	if err != nil {
-		logger.Error(err)
-	}
-	return
-}
-
-func isUint32ArrayEmpty(a []uint32) (empty bool) {
-	empty = true
-	for _, v := range a {
-		if v != 0 {
-			empty = false
-			break
-		}
-	}
 	return
 }
 
@@ -211,8 +151,13 @@ func execWithIO(name string, arg ...string) (process *os.Process, stdin io.Write
 	if err != nil {
 		return
 	}
-	go cmd.Wait()
-
+	go func() {
+		err = cmd.Wait()
+		if err != nil {
+			logger.Warning("failed to wait cmd:", err)
+			return
+		}
+	}()
 	process = cmd.Process
 	return
 }
@@ -229,4 +174,121 @@ func isWirelessDeviceSupportHotspot(macAddress string) bool {
 		return false
 	}
 	return dev.SupportedHotspot()
+}
+
+func getAutoConnectConnUuidListByConnType(connType string) ([]string, error) {
+	var uuidSlice []string
+	// get connections slice from settings
+	connPaths, err := nmSettings.ListConnections(0)
+	if err != nil {
+		logger.Warningf("get network connections failed, err: %v", err)
+		return nil, err
+	}
+	// get system bus
+	systemBus, err := dbus.SystemBus()
+	if err != nil {
+		logger.Warning(err)
+		return nil, err
+	}
+	// get uuid list from list according to type
+	for _, connPath := range connPaths {
+		conn, err := nmdbus.NewConnectionSettings(systemBus, connPath)
+		if err != nil {
+			logger.Warning(err)
+			continue
+		}
+		settings, err := conn.GetSettings(0)
+		if err != nil {
+			logger.Warning(err)
+			continue
+		}
+		// check if type is wanted
+		if getSettingConnectionType(settings) != connType {
+			continue
+		}
+		// check if is auto connect
+		autoConnect := getSettingConnectionAutoconnect(settings)
+		if !autoConnect {
+			continue
+		}
+		// add uuid
+		uuid := getSettingConnectionUuid(settings)
+		if uuid != "" {
+			uuidSlice = append(uuidSlice, uuid)
+		}
+	}
+	return uuidSlice, nil
+}
+
+func isNetworkAvailable() (bool, error) {
+	state, err := nmManager.PropState().Get(0)
+	if err != nil {
+		return false, err
+	}
+	return state >= nm.NM_STATE_CONNECTED_SITE, nil
+}
+
+func enableNetworking() error {
+	enabled, err := nmManager.NetworkingEnabled().Get(0)
+	if err != nil {
+		return err
+	}
+
+	if enabled {
+		return nil
+	}
+
+	return nmManager.Enable(0, true)
+}
+
+func (m *Manager) isSessionActive() bool {
+	active, err := m.currentSession.Active().Get(dbus.FlagNoAutoStart)
+	if err != nil {
+		logger.Error("Failed to get self active:", err)
+		return false
+	}
+	return active
+}
+
+// 解析重定向地址
+func getRedirectFromResponse(resp *http.Response, detectUrl string) (string, error) {
+	if resp == nil {
+		return "", errors.New("response is nil")
+	}
+	// 当前返回的是否为重定向
+	if resp.StatusCode != 302 {
+		return "", errors.New("response is not redirect")
+	}
+	// 是否包含location
+	location := resp.Header.Get("Location")
+	if location == "" {
+		return "", errors.New("response has no location")
+	}
+	// 默认返回整个location
+	urlMsg, err := url.Parse(location)
+	if err != nil {
+		logger.Warningf("parse location failed, err: %v", err)
+		// 解析失败则返回原来的location，不对location做处理
+		return location, nil
+	}
+	// 判断url参数
+	if len(urlMsg.RawQuery) > 0 {
+		// 获取解析参数
+		paramSl, err := url.ParseQuery(urlMsg.RawQuery)
+		if err != nil {
+			// 解析失败则返回原location
+			logger.Warningf("parse params failed, err: %v", err)
+			return location, nil
+		}
+		// 获取url信息
+		redirectUrl := paramSl.Get("url")
+		// 认证后的跳转到地址如果为之前的请求地址，则删除该地址，否则不删除
+		if strings.Contains(redirectUrl, detectUrl) {
+			paramSl.Del("url")
+			// 参数更新
+			urlMsg.RawQuery = paramSl.Encode()
+			return urlMsg.String(), nil
+		}
+	}
+	return location, nil
 }

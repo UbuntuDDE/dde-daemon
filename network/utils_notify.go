@@ -24,9 +24,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.notifications"
+	"github.com/godbus/dbus"
+	notifications "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.notifications"
 	"pkg.deepin.io/dde/daemon/network/nm"
-	"pkg.deepin.io/lib/dbus1"
 	. "pkg.deepin.io/lib/gettext"
 )
 
@@ -34,12 +34,10 @@ const (
 	notifyIconNetworkOffline            = "notification-network-offline"
 	notifyIconWiredConnected            = "notification-network-wired-connected"
 	notifyIconWiredDisconnected         = "notification-network-wired-disconnected"
-	notifyIconWiredLocal                = "notification-network-wired-local"
 	notifyIconWiredError                = notifyIconWiredDisconnected
 	notifyIconWirelessConnected         = "notification-network-wireless-full"
 	notifyIconWirelessDisconnected      = "notification-network-wireless-disconnected"
 	notifyIconWirelessDisabled          = "notification-network-wireless-disabled"
-	notifyIconWirelessLocal             = "notification-network-wireless-local"
 	notifyIconWirelessError             = notifyIconWirelessDisconnected
 	notifyIconVpnConnected              = "notification-network-vpn-connected"
 	notifyIconVpnDisconnected           = "notification-network-vpn-disconnected"
@@ -59,7 +57,7 @@ const (
 
 var (
 	notifyEnabled       = true
-	notification        *notifications.Notifications
+	notification        notifications.Notifications
 	notifyId            uint32
 	notifyIdMu          sync.Mutex
 	globalNotifyManager *NotifyManager
@@ -152,11 +150,13 @@ func (nm *NotifyManager) loop() {
 }
 
 func notify(icon, summary, body string) {
-	globalNotifyManager.addMsg(&notifyMsg{
-		icon:    icon,
-		summary: summary,
-		body:    body,
-	})
+	if globalSessionActive {
+		globalNotifyManager.addMsg(&notifyMsg{
+			icon:    icon,
+			summary: summary,
+			body:    body,
+		})
+	}
 }
 
 func _notify(icon, summary, body string) {
@@ -179,10 +179,6 @@ func _notify(icon, summary, body string) {
 	notifyIdMu.Lock()
 	notifyId = nid
 	notifyIdMu.Unlock()
-}
-
-func notifyNetworkOffline() {
-	notify(notifyIconNetworkOffline, Tr("Disconnected"), Tr("You are now offline."))
 }
 
 func notifyAirplanModeEnabled() {

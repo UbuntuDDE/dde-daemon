@@ -29,10 +29,10 @@ import (
 	"strings"
 	"sync"
 
+	dbus "github.com/godbus/dbus"
 	authenticate "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.authenticate"
 	"pkg.deepin.io/dde/daemon/accounts/users"
-	"pkg.deepin.io/gir/glib-2.0"
-	dbus "pkg.deepin.io/lib/dbus1"
+	glib "pkg.deepin.io/gir/glib-2.0"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/gdkpixbuf"
 	"pkg.deepin.io/lib/strv"
@@ -60,8 +60,22 @@ const (
 	confKeyHistoryLayout      = "HistoryLayout"
 	confKeyUse24HourFormat    = "Use24HourFormat"
 	confKeyUUID               = "UUID"
+	confKeyWorkspace          = "Workspace"
+	confKeyWeekdayFormat      = "WeekdayFormat"
+	confKeyShortDateFormat    = "ShortDateFormat"
+	confKeyLongDateFormat     = "LongDateFormat"
+	confKeyShortTimeFormat    = "ShortTimeFormat"
+	confKeyLongTimeFormat     = "LongTimeFormat"
+	confKeyWeekBegins         = "WeekBegins"
 
 	defaultUse24HourFormat = true
+	defaultWeekdayFormat   = 0
+	defaultShortDateFormat = 0
+	defaultLongDateFormat  = 0
+	defaultShortTimeFormat = 0
+	defaultLongTimeFormat  = 0
+	defaultWeekBegins      = 0
+	defaultWorkspace       = 1
 )
 
 func getDefaultUserBackground() string {
@@ -88,7 +102,14 @@ type User struct {
 	Layout          string
 	IconFile        string
 	Use24HourFormat bool
-	customIcon      string
+	WeekdayFormat   int32
+	ShortDateFormat int32
+	LongDateFormat  int32
+	ShortTimeFormat int32
+	LongTimeFormat  int32
+	WeekBegins      int32
+
+	customIcon string
 	// dbusutil-gen: equal=nil
 	DesktopBackgrounds []string
 	// dbusutil-gen: equal=isStrvEqual
@@ -103,9 +124,11 @@ type User struct {
 	Locked bool
 	// 是否允许此用户自动登录
 	AutomaticLogin bool
-	
+	// 当前工作区
+	Workspace int32
+
 	// deprecated property
-	SystemAccount  bool
+	SystemAccount bool
 
 	NoPasswdLogin bool
 
@@ -118,37 +141,10 @@ type User struct {
 	// dbusutil-gen: equal=nil
 	HistoryLayout []string
 
-	syncLocker   sync.Mutex
 	configLocker sync.Mutex
-
-	methods *struct {
-		SetFullName           func() `in:"name"`
-		SetHomeDir            func() `in:"home"`
-		SetShell              func() `in:"shell"`
-		SetPassword           func() `in:"password"`
-		SetAccountType        func() `in:"accountType"`
-		SetLocked             func() `in:"locked"`
-		SetAutomaticLogin     func() `in:"enabled"`
-		EnableNoPasswdLogin   func() `in:"enabled"`
-		SetLocale             func() `in:"locale"`
-		SetLayout             func() `in:"layout"`
-		SetIconFile           func() `in:"iconFile"`
-		DeleteIconFile        func() `in:"iconFile"`
-		SetDesktopBackgrounds func() `in:"backgrounds"`
-		SetGreeterBackground  func() `in:"background"`
-		SetHistoryLayout      func() `in:"layouts"`
-		IsIconDeletable       func() `in:"icon"`
-		GetLargeIcon          func() `out:"icon"`
-		AddGroup              func() `in:"group"`
-		DeleteGroup           func() `in:"group"`
-		SetGroups             func() `in:"groups"`
-		SetUse24HourFormat    func() `in:"value"`
-		SetMaxPasswordAge     func() `in:"nDays"`
-		IsPasswordExpired     func() `out:"expired"`
-	}
 }
 
-func NewUser(userPath string, service *dbusutil.Service) (*User, error) {
+func NewUser(userPath string, service *dbusutil.Service, ignoreErr bool) (*User, error) {
 	userInfo, err := users.GetUserInfoByUid(getUidFromUserPath(userPath))
 	if err != nil {
 		return nil, err
@@ -156,7 +152,11 @@ func NewUser(userPath string, service *dbusutil.Service) (*User, error) {
 
 	shadowInfo, err := users.GetShadowInfo(userInfo.Name)
 	if err != nil {
-		return nil, err
+		if !ignoreErr {
+			return nil, err
+		} else {
+			shadowInfo = &users.ShadowInfo{Name: userInfo.Name, Status: users.PasswordStatusLocked}
+		}
 	}
 
 	var u = &User{
@@ -194,13 +194,21 @@ func NewUser(userPath string, service *dbusutil.Service) (*User, error) {
 		u.XSession = xSession
 		u.SystemAccount = false
 		u.Layout = getDefaultLayout()
-		u.Locale = getDefaultLocale()
+		u.setLocale(getDefaultLocale())
 		u.IconFile = defaultUserIcon
 		defaultUserBackground := getDefaultUserBackground()
 		u.DesktopBackgrounds = []string{defaultUserBackground}
 		u.GreeterBackground = defaultUserBackground
 		u.Use24HourFormat = defaultUse24HourFormat
 		u.UUID = dutils.GenUuid()
+		u.WeekdayFormat = defaultWeekdayFormat
+		u.ShortDateFormat = defaultShortDateFormat
+		u.LongDateFormat = defaultLongDateFormat
+		u.ShortTimeFormat = defaultShortTimeFormat
+		u.LongTimeFormat = defaultLongTimeFormat
+		u.WeekBegins = defaultWeekBegins
+		u.Workspace = defaultWorkspace
+
 		err = u.writeUserConfig()
 		if err != nil {
 			logger.Warning(err)
@@ -224,9 +232,9 @@ func NewUser(userPath string, service *dbusutil.Service) (*User, error) {
 		isSave = true
 	}
 	locale, _ := kf.GetString(confGroupUser, confKeyLocale)
-	u.Locale = locale
+	u.setLocale(locale)
 	if locale == "" {
-		u.Locale = getDefaultLocale()
+		u.setLocale(getDefaultLocale())
 		isSave = true
 	}
 	layout, _ := kf.GetString(confGroupUser, confKeyLayout)
@@ -282,9 +290,51 @@ func NewUser(userPath string, service *dbusutil.Service) (*User, error) {
 		isSave = true
 	}
 
+	u.WeekdayFormat, err = kf.GetInteger(confGroupUser, confKeyWeekdayFormat)
+	if err != nil {
+		u.WeekdayFormat = defaultWeekdayFormat
+		isSave = true
+	}
+
+	u.ShortDateFormat, err = kf.GetInteger(confGroupUser, confKeyShortDateFormat)
+	if err != nil {
+		u.ShortDateFormat = defaultShortDateFormat
+		isSave = true
+	}
+
+	u.LongDateFormat, err = kf.GetInteger(confGroupUser, confKeyLongDateFormat)
+	if err != nil {
+		u.LongDateFormat = defaultLongDateFormat
+		isSave = true
+	}
+
+	u.ShortTimeFormat, err = kf.GetInteger(confGroupUser, confKeyShortTimeFormat)
+	if err != nil {
+		u.ShortTimeFormat = defaultShortTimeFormat
+		isSave = true
+	}
+
+	u.LongTimeFormat, err = kf.GetInteger(confGroupUser, confKeyLongTimeFormat)
+	if err != nil {
+		u.LongTimeFormat = defaultLongTimeFormat
+		isSave = true
+	}
+
+	u.WeekBegins, err = kf.GetInteger(confGroupUser, confKeyWeekBegins)
+	if err != nil {
+		u.WeekBegins = defaultWeekBegins
+		isSave = true
+	}
+
 	u.UUID, err = kf.GetString(confGroupUser, confKeyUUID)
 	if err != nil || u.UUID == "" {
 		u.UUID = dutils.GenUuid()
+		isSave = true
+	}
+
+	u.Workspace, err = kf.GetInteger(confGroupUser, confKeyWorkspace)
+	if err != nil || u.Workspace == 0 {
+		u.Workspace = defaultWorkspace
 		isSave = true
 	}
 
@@ -297,6 +347,71 @@ func NewUser(userPath string, service *dbusutil.Service) (*User, error) {
 
 	u.checkLeftSpace()
 	return u, nil
+}
+
+func NewUdcpUser(usrId uint32, service *dbusutil.Service, groups []string) (*User, error) {
+	var err error
+	if users.ExistPwUid(usrId) != 0 {
+		return nil, errors.New("No such user id")
+	}
+
+	var u = &User{
+		service:            service,
+		UserName:           users.GetPwName(usrId),
+		FullName:           users.GetPwGecos(usrId),
+		Uid:                users.GetPwUid(usrId),
+		Gid:                users.GetPwGid(usrId),
+		HomeDir:            users.GetPwDir(usrId),
+		Shell:              users.GetPwShell(usrId),
+		AutomaticLogin:     false,
+		NoPasswdLogin:      false,
+		Locked:             false,
+		PasswordStatus:     users.PasswordStatusUsable,
+		MaxPasswordAge:     30,
+		PasswordLastChange: 18737,
+	}
+
+	u.AccountType = users.UserTypeUdcp
+	u.Groups = groups
+
+	// NOTICE(jouyouyun): Got created time,  not accurate, can only be used as a reference
+	u.CreatedTime, err = u.getCreatedTime()
+	if err != nil {
+		logger.Warning("Failed to get created time:", err)
+	}
+
+	updateConfigPath(users.GetPwName(usrId))
+
+	xSession, _ := users.GetDefaultXSession()
+	u.XSession = xSession
+
+	// only show non system account
+	u.SystemAccount = false
+	u.setLocale(getDefaultLocale())
+	u.Layout = getDefaultLayout()
+	u.IconFile = defaultUserIcon
+	u.customIcon = ""
+	u.IconList = u.getAllIcons()
+	u.DesktopBackgrounds = []string{getDefaultUserBackground()}
+	u.GreeterBackground = getDefaultUserBackground()
+	u.HistoryLayout = append(u.HistoryLayout, u.Layout)
+	u.Use24HourFormat = defaultUse24HourFormat
+	u.WeekdayFormat = defaultWeekdayFormat
+	u.ShortDateFormat = defaultShortDateFormat
+	u.LongDateFormat = defaultLongDateFormat
+	u.ShortTimeFormat = defaultShortTimeFormat
+	u.LongTimeFormat = defaultLongTimeFormat
+	u.WeekBegins = defaultWeekBegins
+	u.UUID = dutils.GenUuid()
+	u.Workspace = defaultWorkspace
+
+	err = u.writeUserConfig()
+	if err != nil {
+		logger.Warning(err)
+	}
+
+	u.checkLeftSpace()
+	return u, err
 }
 
 func getUserGreeterBackground(kf *glib.KeyFile) (string, bool) {
@@ -314,7 +429,7 @@ func getUserGreeterBackground(kf *glib.KeyFile) (string, bool) {
 
 func (u *User) updateIconList() {
 	u.IconList = u.getAllIcons()
-	u.emitPropChangedIconList(u.IconList)
+	_ = u.emitPropChangedIconList(u.IconList)
 }
 
 func (u *User) getAllIcons() []string {
@@ -326,7 +441,7 @@ func (u *User) getAllIcons() []string {
 }
 
 func (u *User) getGroups() []string {
-	groups, err := users.GetUserGroups(u.UserName)
+	groups, err := users.GetUserGroups(u.UserName, u.Gid)
 	if err != nil {
 		logger.Warning("failed to get user groups:", err)
 		return nil
@@ -350,7 +465,9 @@ func (u *User) setIconFile(iconURI string) (string, bool, error) {
 
 	if scaled {
 		logger.Debug("icon scaled", tmp)
-		defer os.Remove(tmp)
+		defer func() {
+			_ = os.Remove(tmp)
+		}()
 	}
 
 	dest := getNewUserCustomIconDest(u.UserName)
@@ -367,7 +484,7 @@ func (u *User) setIconFile(iconURI string) (string, bool, error) {
 
 type configChange struct {
 	key   string
-	value interface{} // allowed type are bool, string, []string
+	value interface{} // allowed type are bool, string, []string , int32
 }
 
 func (u *User) writeUserConfigWithChanges(changes []configChange) error {
@@ -404,6 +521,7 @@ func (u *User) writeUserConfigWithChanges(changes []configChange) error {
 	kf.SetString(confGroupUser, confKeyGreeterBackground, u.GreeterBackground)
 	kf.SetStringList(confGroupUser, confKeyHistoryLayout, u.HistoryLayout)
 	kf.SetString(confGroupUser, confKeyUUID, u.UUID)
+	kf.SetInteger(confGroupUser, confKeyWorkspace, u.Workspace)
 
 	for _, change := range changes {
 		switch val := change.value.(type) {
@@ -413,6 +531,8 @@ func (u *User) writeUserConfigWithChanges(changes []configChange) error {
 			kf.SetString(confGroupUser, change.key, val)
 		case []string:
 			kf.SetStringList(confGroupUser, change.key, val)
+		case int32:
+			kf.SetInteger(confGroupUser, change.key, val)
 		default:
 			return errors.New("unsupported value type")
 		}
@@ -456,6 +576,11 @@ func (u *User) updatePropGroups() {
 	u.PropsMu.Unlock()
 }
 
+func (u *User) updatePropGroupsNoLock() {
+	newVal := u.getGroups()
+	u.setPropGroups(newVal)
+}
+
 func (u *User) updatePropAutomaticLogin() {
 	newVal := users.IsAutoLoginUser(u.UserName)
 	u.PropsMu.Lock()
@@ -468,7 +593,11 @@ func (u *User) updatePropsPasswd(uInfo *users.UserInfo) {
 	var oldUserName string
 
 	u.PropsMu.Lock()
-	u.setPropGid(uInfo.Gid)
+	if u.Gid != uInfo.Gid {
+		// gid 被修改
+		u.setPropGid(uInfo.Gid)
+		u.updatePropGroupsNoLock()
+	}
 
 	if u.UserName != uInfo.Name {
 		oldUserName = u.UserName
@@ -636,7 +765,7 @@ func getTempFile() (string, error) {
 		return "", err
 	}
 	name := tmpfile.Name()
-	tmpfile.Close()
+	_ = tmpfile.Close()
 	return name, nil
 }
 

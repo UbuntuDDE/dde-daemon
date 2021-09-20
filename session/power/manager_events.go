@@ -22,17 +22,20 @@ package power
 import (
 	"time"
 
+	dbus "github.com/godbus/dbus"
 	"pkg.deepin.io/dde/api/soundutils"
 	. "pkg.deepin.io/lib/gettext"
 )
 
+// nolint
 const (
 	suspendStateUnknown = iota + 1
+	suspendStateLidOpen
 	suspendStateFinish
 	suspendStateWakeup
-	suspendStateLidOpen
 	suspendStatePrepare
 	suspendStateLidClose
+	suspendStateButtonClick
 )
 
 func (m *Manager) setPrepareSuspend(v int) {
@@ -58,7 +61,7 @@ func (m *Manager) shouldIgnoreIdleOff() bool {
 // 处理有线电源插入拔出事件
 func (m *Manager) initOnBatteryChangedHandler() {
 	power := m.helper.Power
-	power.OnBattery().ConnectChanged(func(hasValue bool, onBattery bool) {
+	err := power.OnBattery().ConnectChanged(func(hasValue bool, onBattery bool) {
 		if !hasValue {
 			return
 		}
@@ -75,22 +78,20 @@ func (m *Manager) initOnBatteryChangedHandler() {
 			}
 		}
 	})
+
+	if err != nil {
+		logger.Warning(err)
+	}
 }
 
 func (m *Manager) handleBeforeSuspend() {
 	m.setPrepareSuspend(suspendStatePrepare)
 	logger.Debug("before sleep")
-	if m.SleepLock.Get() {
-		m.lockWaitShow(5*time.Second, false)
-	}
 }
 
 func (m *Manager) handleWakeup() {
 	m.setPrepareSuspend(suspendStateWakeup)
 	logger.Debug("wakeup")
-	if m.SleepLock.Get() {
-		m.doLock(true)
-	}
 
 	// Fix wayland sometimes no dpms event after wakeup
 	if m.UseWayland {
@@ -107,7 +108,21 @@ func (m *Manager) handleWakeup() {
 	}
 
 	m.setDPMSModeOn()
-	m.helper.Power.RefreshBatteries(0)
+	err := m.display.RefreshBrightness(0)
+	if err != nil {
+		logger.Warning(err)
+	}
+
+	ch := make(chan *dbus.Call, 1)
+	m.helper.Power.GoRefreshBatteries(0, ch)
+	go func() {
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Second):
+			return
+		}
+	}()
+
 	playSound(soundutils.EventWakeup)
 }
 
@@ -154,8 +169,11 @@ func (m *Manager) handleBatteryDisplayUpdate() {
 		delete(m.BatteryPercentage, batteryDisplay)
 		delete(m.BatteryState, batteryDisplay)
 
-		m.service.EmitPropertiesChanged(m, nil, "BatteryIsPresent",
+		err := m.service.EmitPropertiesChanged(m, nil, "BatteryIsPresent",
 			"BatteryPercentage", "BatteryState")
+		if err != nil {
+			logger.Warning(err)
+		}
 	}
 
 	m.PropsMu.Unlock()

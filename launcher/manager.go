@@ -30,19 +30,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+	"github.com/godbus/dbus"
 	libApps "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.apps"
 	libLastore "github.com/linuxdeepin/go-dbus-factory/com.deepin.lastore"
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.notifications"
+	notifications "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.notifications"
 	"pkg.deepin.io/dde/daemon/common/dsync"
 	"pkg.deepin.io/dde/daemon/session/common"
-	"pkg.deepin.io/gir/gio-2.0"
-	"pkg.deepin.io/lib/dbus1"
+	gio "pkg.deepin.io/gir/gio-2.0"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/gsprop"
-	"pkg.deepin.io/lib/fsnotify"
 	"pkg.deepin.io/lib/gettext"
 	"pkg.deepin.io/lib/strv"
 )
+
+//go:generate dbusutil-gen em -type Manager
 
 const (
 	lastoreDataDir    = "/var/lib/lastore"
@@ -63,6 +65,7 @@ const (
 	gsKeyAppsUseProxy       = "apps-use-proxy"
 	gsKeyAppsDisableScaling = "apps-disable-scaling"
 	gsKeyAppsHidden         = "apps-hidden"
+	gsKeyPackageNameSearch  = "search-package-name"
 )
 
 type Manager struct {
@@ -73,15 +76,16 @@ type Manager struct {
 	items          map[string]*Item
 	itemsMutex     sync.Mutex
 
-	appsObj        *libApps.Apps
-	notifications  *notifications.Notifications
-	lastore        *libLastore.Lastore
+	appsObj        libApps.Apps
+	notifications  notifications.Notifications
+	lastore        libLastore.Lastore
 	pinyinEnabled  bool
 	desktopPkgMap  map[string]string
 	pkgCategoryMap map[string]CategoryID
 	nameMap        map[string]string
 
-	searchTaskStack *searchTaskStack
+	searchTaskStack          *searchTaskStack
+	packageNameSearchEnabled bool
 
 	itemsChangedHit uint32
 	searchMu        sync.Mutex
@@ -100,6 +104,7 @@ type Manager struct {
 	DisplayMode gsprop.Enum `prop:"access:rw"`
 	Fullscreen  gsprop.Bool `prop:"access:rw"`
 
+	//nolint
 	signals *struct {
 		// SearchDone 返回搜索结果列表
 		SearchDone struct {
@@ -127,22 +132,6 @@ type Manager struct {
 			errMsg string
 		}
 	}
-
-	methods *struct {
-		GetAllItemInfos          func() `out:"itemInfoList"`
-		GetItemInfo              func() `in:"id" out:"itemInfo"`
-		GetAllNewInstalledApps   func() `out:"apps"`
-		IsItemOnDesktop          func() `in:"id" out:"result"`
-		RequestRemoveFromDesktop func() `in:"id" out:"ok"`
-		RequestSendToDesktop     func() `in:"id" out:"ok"`
-		MarkLaunched             func() `in:"id"`
-		RequestUninstall         func() `in:"id,purge"`
-		Search                   func() `in:"key"`
-		GetUseProxy              func() `in:"id" out:"value"`
-		SetUseProxy              func() `in:"id,value"`
-		GetDisableScaling        func() `in:"id" out:"value"`
-		SetDisableScaling        func() `in:"id,value"`
-	}
 }
 
 func NewManager(service *dbusutil.Service) (*Manager, error) {
@@ -164,7 +153,7 @@ func NewManager(service *dbusutil.Service) (*Manager, error) {
 	m.fsEventTimers = make(map[string]*time.Timer)
 	m.fsWatcher, err = fsnotify.NewWatcher()
 	if err == nil {
-		err = m.fsWatcher.Watch(lastoreDataDir)
+		err = m.fsWatcher.Add(lastoreDataDir)
 		if err == nil {
 			go m.handleFsWatcherEvents()
 		} else {
@@ -177,6 +166,8 @@ func NewManager(service *dbusutil.Service) (*Manager, error) {
 	m.settings = gio.NewSettings(gsSchemaLauncher)
 	m.DisplayMode.Bind(m.settings, gsKeyDisplayMode)
 	m.Fullscreen.Bind(m.settings, gsKeyFullscreen)
+	//should exec before app item's init
+	m.packageNameSearchEnabled = m.settings.GetBoolean(gsKeyPackageNameSearch)
 
 	m.noPkgItemIDs = make(map[string]int)
 
@@ -220,7 +211,7 @@ func NewManager(service *dbusutil.Service) (*Manager, error) {
 	}
 
 	m.appsObj.InitSignalExt(m.sysSigLoop, true)
-	_, err = m.appsObj.ConnectEvent(func(filename string, _ uint32) {
+	_, err = m.appsObj.DesktopFileWatcher().ConnectEvent(func(filename string, _ uint32) {
 		if shouldCheckDesktopFile(filename) {
 			logger.Debug("DFWatcher event", filename)
 			m.delayHandleFileEvent(filename)
@@ -230,14 +221,14 @@ func NewManager(service *dbusutil.Service) (*Manager, error) {
 		logger.Warning(err)
 	}
 
-	err = m.appsObj.WatchDirs(0, getDataDirsForWatch())
+	err = m.appsObj.LaunchedRecorder().WatchDirs(0, getDataDirsForWatch())
 	if err != nil {
 		logger.Warning(err)
 	}
 
-	_, err = m.appsObj.ConnectServiceRestarted(func() {
+	_, err = m.appsObj.LaunchedRecorder().ConnectServiceRestarted(func() {
 		if m.appsObj != nil {
-			err = m.appsObj.WatchDirs(0, getDataDirsForWatch())
+			err = m.appsObj.LaunchedRecorder().WatchDirs(0, getDataDirsForWatch())
 			if err != nil {
 				logger.Warning(err)
 			}
@@ -246,7 +237,7 @@ func NewManager(service *dbusutil.Service) (*Manager, error) {
 	if err != nil {
 		logger.Warning(err)
 	}
-	_, err = m.appsObj.ConnectLaunched(func(path string) {
+	_, err = m.appsObj.LaunchedRecorder().ConnectLaunched(func(path string) {
 		item := m.getItemByPath(path)
 		if item == nil {
 			return
@@ -321,6 +312,9 @@ func (m *Manager) addItem(item *Item) {
 	item.CategoryID = m.queryCategoryID(item)
 	logger.Debug("addItem category", item.CategoryID)
 	item.setSearchTargets(m.pinyinEnabled)
+	if m.packageNameSearchEnabled {
+		item.addSearchTarget(idScore, item.ID)
+	}
 	logger.Debug("item search targets:", item.searchTargets)
 	m.items[item.ID] = item
 }

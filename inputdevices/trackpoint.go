@@ -62,7 +62,7 @@ type TrackPoint struct {
 
 	LeftHanded gsprop.Bool `prop:"access:rw"`
 
-	devInfos dxMouses
+	devInfos Mouses
 	setting  *gio.Settings
 }
 
@@ -104,13 +104,8 @@ func (tp *TrackPoint) init() {
 	tp.motionScaling()
 }
 
-func (tp *TrackPoint) handleDeviceChanged() {
-	tp.updateDXMouses()
-	tp.init()
-}
-
 func (tp *TrackPoint) updateDXMouses() {
-	tp.devInfos = dxMouses{}
+	tp.devInfos = Mouses{}
 	for _, info := range getMouseInfos(false) {
 		if !info.TrackPoint {
 			continue

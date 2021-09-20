@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"sync"
 
+	dbus "github.com/godbus/dbus"
 	accounts "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.accounts"
 	huawei_fprint "github.com/linuxdeepin/go-dbus-factory/com.huawei.fingerprint"
 	fprintd_common "pkg.deepin.io/dde/daemon/fprintd/common"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/strv"
 )
@@ -21,7 +21,7 @@ const (
 
 type HuaweiDevice struct {
 	service *dbusutil.Service
-	core    *huawei_fprint.Fingerprint
+	core    huawei_fprint.Fingerprint
 
 	mu       sync.Mutex
 	claimed  bool
@@ -30,9 +30,6 @@ type HuaweiDevice struct {
 	userUuid string
 
 	ScanType string // const
-
-	methods *deviceMethods
-	signals *deviceSignals
 }
 
 func (d *HuaweiDevice) destroy() {
@@ -48,7 +45,6 @@ func (d *HuaweiDevice) getPath() dbus.ObjectPath {
 
 const (
 	huaweiDeviceStatusBusy = 1
-	huaweiDeviceStatusIdle = 0
 )
 
 func getUserUuid(username string) (string, error) {
@@ -174,7 +170,7 @@ func (dev *HuaweiDevice) ClaimForce(sender dbus.Sender, username string) *dbus.E
 	return dbusutil.ToError(err)
 }
 
-func (dev *HuaweiDevice) GetCapabilities() ([]string, *dbus.Error) {
+func (dev *HuaweiDevice) GetCapabilities() (caps []string, busErr *dbus.Error) {
 	return []string{"ClaimForce", "DeleteEnrolledFinger"}, nil
 }
 
@@ -337,7 +333,7 @@ func (dev *HuaweiDevice) verifyStart(sender dbus.Sender) error {
 	return err
 }
 
-func (dev *HuaweiDevice) VerifyStart(sender dbus.Sender, _finger string) *dbus.Error {
+func (dev *HuaweiDevice) VerifyStart(sender dbus.Sender, finger string) *dbus.Error {
 	err := dev.verifyStart(sender)
 	return dbusutil.ToError(err)
 }
@@ -429,14 +425,14 @@ func (dev *HuaweiDevice) deleteEnrolledFinger(sender dbus.Sender, username, fing
 	return nil
 }
 
-func (dev *HuaweiDevice) ListEnrolledFingers(username string) ([]string, *dbus.Error) {
-	result, err := dev.listEnrolledFingers(username)
+func (dev *HuaweiDevice) ListEnrolledFingers(username string) (fingers []string, busErr *dbus.Error) {
+	fingers, err := dev.listEnrolledFingers(username)
 	if err != nil {
 		logger.Warningf("ListEnrolledFingers() username: %q, err: %v", username, err)
 	} else {
-		logger.Debugf("ListEnrolledFingers() username: %q, ret: %v", username, result)
+		logger.Debugf("ListEnrolledFingers() username: %q, ret: %v", username, fingers)
 	}
-	return result, dbusutil.ToError(err)
+	return fingers, dbusutil.ToError(err)
 }
 
 func (dev *HuaweiDevice) listEnrolledFingers(username string) ([]string, error) {
@@ -472,15 +468,10 @@ func (*HuaweiDevice) GetInterfaceName() string {
 }
 
 const (
-	fprintdEnrollStatusCompleted          = "enroll-completed"
-	fprintdEnrollStatusFailed             = "enroll-failed"
-	fprintdEnrollStatusStagePassed        = "enroll-stage-passed"
-	fprintdEnrollStatusRetryScan          = "enroll-retry-scan"
-	fprintdEnrollStatusSwipeTooShort      = "enroll-swipe-too-short"
-	fprintdEnrollStatusFingerNotCentered  = "enroll-finger-not-centered"
-	fprintdEnrollStatusRemoveAndRetry     = "enroll-remove-and-retry"
-	fprintdEnrollStatusEnrollDisconnected = "enroll-disconnected"
-	fprintdEnrollStatusEnrollUnknownError = "enroll-unknown-error"
+	fprintdEnrollStatusCompleted   = "enroll-completed"
+	fprintdEnrollStatusFailed      = "enroll-failed"
+	fprintdEnrollStatusStagePassed = "enroll-stage-passed"
+	fprintdEnrollStatusRetryScan   = "enroll-retry-scan"
 
 	fprintdVerifyStatusNoMatch      = "verify-no-match"
 	fprintdVerifyStatusMatch        = "verify-match"

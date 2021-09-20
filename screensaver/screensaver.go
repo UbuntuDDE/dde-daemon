@@ -24,15 +24,17 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/godbus/dbus"
 	ofdbus "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.dbus"
-	"github.com/linuxdeepin/go-x11-client"
+	x "github.com/linuxdeepin/go-x11-client"
 	"github.com/linuxdeepin/go-x11-client/ext/dpms"
 	"github.com/linuxdeepin/go-x11-client/ext/screensaver"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/proxy"
 	"pkg.deepin.io/lib/log"
 )
+
+//go:generate dbusutil-gen em -type ScreenSaver
 
 var logger = log.NewLogger("daemon/screensaver")
 
@@ -47,7 +49,7 @@ type ScreenSaver struct {
 	xConn      *x.Conn
 	service    *dbusutil.Service
 	sigLoop    *dbusutil.SignalLoop
-	dbusDaemon *ofdbus.DBus
+	dbusDaemon ofdbus.DBus
 
 	blank        byte
 	idleTime     uint32
@@ -60,7 +62,7 @@ type ScreenSaver struct {
 	//Inhibit state, we need save the SetTimeout value,
 	//so we can recover the correct state when enter UnInhibit state.
 	lastVals *timeoutVals
-
+	//nolint
 	signals *struct {
 		// Idle 定时器超时信号，当系统在给定时间内未被使用时发送
 		IdleOn struct{}
@@ -70,12 +72,6 @@ type ScreenSaver struct {
 
 		// Idle 超时后，如果系统被使用就发送此信号，重新开始 Idle 计时器
 		IdleOff struct{}
-	}
-
-	methods *struct {
-		Inhibit    func() `in:"name,reason" out:"cookie"`
-		UnInhibit  func() `in:"cookie"`
-		SetTimeout func() `in:"seconds,interval,blank"`
 	}
 }
 
@@ -90,9 +86,9 @@ type timeoutVals struct {
 //
 // reason: 抑制原因
 //
-// ret0: 此次操作对应的 id，用来取消抑制
-func (ss *ScreenSaver) Inhibit(sender dbus.Sender, name, reason string) (uint32,
-	*dbus.Error) {
+// cookie: 此次操作对应的 id，用来取消抑制
+func (ss *ScreenSaver) Inhibit(sender dbus.Sender, name, reason string) (cookie uint32,
+	busErr *dbus.Error) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
@@ -239,10 +235,18 @@ func newScreenSaver(service *dbusutil.Service) (*ScreenSaver, error) {
 	// query screensaver ext version
 	ssVersion, err := screensaver.QueryVersion(s.xConn, screensaver.MajorVersion, screensaver.MinorVersion).Reply(s.xConn)
 	if err != nil {
-		return nil, err
+		logger.Warning("failed to get screensaver ext version:", err)
+	} else {
+		logger.Debugf("screensaver ext version %d.%d", ssVersion.ServerMajorVersion,
+			ssVersion.ServerMinorVersion)
+		root := s.xConn.GetDefaultScreen().Root
+		err = screensaver.SelectInputChecked(s.xConn, x.Drawable(root), screensaver.EventNotifyMask|
+			screensaver.EventCycleMask).Check(s.xConn)
+		if err != nil {
+			logger.Warning(err)
+		}
+		go s.loop()
 	}
-	logger.Debugf("screensaver ext version %d.%d", ssVersion.ServerMajorVersion,
-		ssVersion.ServerMinorVersion)
 
 	// query dpms ext version
 	dpmsVersion, err := dpms.GetVersion(s.xConn, 1, 1).Reply(s.xConn)
@@ -253,16 +257,8 @@ func newScreenSaver(service *dbusutil.Service) (*ScreenSaver, error) {
 			dpmsVersion.ServerMinorVersion)
 	}
 
-	root := s.xConn.GetDefaultScreen().Root
-	err = screensaver.SelectInputChecked(s.xConn, x.Drawable(root), screensaver.EventNotifyMask|
-		screensaver.EventCycleMask).Check(s.xConn)
-	if err != nil {
-		logger.Warning(err)
-	}
-
 	s.listenDBusNameOwnerChanged()
 	s.sigLoop.Start()
-	go s.loop()
 	return s, nil
 }
 

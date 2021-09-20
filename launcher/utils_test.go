@@ -21,90 +21,99 @@ package launcher
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/assert"
 )
 
 func Test_getAppIdByFilePath(t *testing.T) {
-	Convey("getAppIdByFilePath", t, func(c C) {
-		appDirs := []string{"/usr/share/applications", "/usr/local/share/applications", "/home/test_user/.local/share/applications"}
+	appDirs := []string{"/usr/share/applications", "/usr/local/share/applications", "/home/test_user/.local/share/applications"}
 
-		id := getAppIdByFilePath("/usr/share/applications/d-feet.desktop", appDirs)
-		c.So(id, ShouldEqual, "d-feet")
+	id := getAppIdByFilePath("/usr/share/applications/d-feet.desktop", appDirs)
+	assert.Equal(t, id, "d-feet")
 
-		id = getAppIdByFilePath("/usr/share/applications/kde4/krita.desktop", appDirs)
-		c.So(id, ShouldEqual, "kde4/krita")
+	id = getAppIdByFilePath("/usr/share/applications/kde4/krita.desktop", appDirs)
+	assert.Equal(t, id, "kde4/krita")
 
-		id = getAppIdByFilePath("/usr/local/share/applications/deepin-screenshot.desktop", appDirs)
-		c.So(id, ShouldEqual, "deepin-screenshot")
+	id = getAppIdByFilePath("/usr/local/share/applications/deepin-screenshot.desktop", appDirs)
+	assert.Equal(t, id, "deepin-screenshot")
 
-		id = getAppIdByFilePath("/home/test_user/.local/share/applications/space test.desktop", appDirs)
-		c.So(id, ShouldEqual, "space test")
+	id = getAppIdByFilePath("/home/test_user/.local/share/applications/space test.desktop", appDirs)
+	assert.Equal(t, id, "space test")
 
-		id = getAppIdByFilePath("/other/dir/a.desktop", appDirs)
-		c.So(id, ShouldEqual, "")
-	})
+	id = getAppIdByFilePath("/other/dir/a.desktop", appDirs)
+	assert.Equal(t, id, "")
 }
 
 func Test_getUserAppDir(t *testing.T) {
-	Convey("getUserAppDir", t, func(c C) {
+	dataDir := os.Getenv("XDG_DATA_HOME")
+	if dataDir == "" {
 		home := os.Getenv("HOME")
-		c.So(getUserAppDir(), ShouldEqual, filepath.Join(home, ".local/share/applications"))
-	})
+		if home == "" {
+			user, err := user.Current()
+			if err != nil {
+				// 跳过此测试
+				t.Skip()
+				return
+			}
+
+			home = user.HomeDir
+		}
+
+		dataDir = filepath.Join(home, ".local/share")
+	}
+
+	assert.Equal(t, getUserAppDir(), filepath.Join(dataDir, "applications"))
 }
 
 func Test_runeSliceDiff(t *testing.T) {
-	Convey("runeSliceDiff", t, func(c C) {
-		// pop
-		popCount, runesPush := runeSliceDiff([]rune("abc"), []rune("abc"))
-		c.So(popCount, ShouldEqual, 0)
-		c.So(len(runesPush), ShouldEqual, 0)
+	// pop
+	popCount, runesPush := runeSliceDiff([]rune("abc"), []rune("abc"))
+	assert.Equal(t, popCount, 0)
+	assert.Equal(t, len(runesPush), 0)
 
-		popCount, runesPush = runeSliceDiff([]rune("abc"), []rune("abcd"))
-		c.So(popCount, ShouldEqual, 1)
-		c.So(len(runesPush), ShouldEqual, 0)
+	popCount, runesPush = runeSliceDiff([]rune("abc"), []rune("abcd"))
+	assert.Equal(t, popCount, 1)
+	assert.Equal(t, len(runesPush), 0)
 
-		popCount, runesPush = runeSliceDiff([]rune("abc"), []rune("abcde"))
-		c.So(popCount, ShouldEqual, 2)
-		c.So(len(runesPush), ShouldEqual, 0)
+	popCount, runesPush = runeSliceDiff([]rune("abc"), []rune("abcde"))
+	assert.Equal(t, popCount, 2)
+	assert.Equal(t, len(runesPush), 0)
 
-		// push
-		popCount, runesPush = runeSliceDiff([]rune("abcd"), []rune("abc"))
-		c.So(popCount, ShouldEqual, 0)
-		c.So(len(runesPush), ShouldEqual, 1)
-		c.So(runesPush[0], ShouldEqual, 'd')
+	// push
+	popCount, runesPush = runeSliceDiff([]rune("abcd"), []rune("abc"))
+	assert.Equal(t, popCount, 0)
+	assert.Equal(t, len(runesPush), 1)
+	assert.Equal(t, runesPush[0], 'd')
 
-		popCount, runesPush = runeSliceDiff([]rune("abcde"), []rune("abc"))
-		c.So(popCount, ShouldEqual, 0)
-		c.So(len(runesPush), ShouldEqual, 2)
-		c.So(runesPush[0], ShouldEqual, 'd')
-		c.So(runesPush[1], ShouldEqual, 'e')
+	popCount, runesPush = runeSliceDiff([]rune("abcde"), []rune("abc"))
+	assert.Equal(t, popCount, 0)
+	assert.Equal(t, len(runesPush), 2)
+	assert.Equal(t, runesPush[0], 'd')
+	assert.Equal(t, runesPush[1], 'e')
 
-		// pop and push
-		popCount, runesPush = runeSliceDiff([]rune("abcd"), []rune("abce"))
-		c.So(popCount, ShouldEqual, 1)
-		c.So(len(runesPush), ShouldEqual, 1)
-		c.So(runesPush[0], ShouldEqual, 'd')
+	// pop and push
+	popCount, runesPush = runeSliceDiff([]rune("abcd"), []rune("abce"))
+	assert.Equal(t, popCount, 1)
+	assert.Equal(t, len(runesPush), 1)
+	assert.Equal(t, runesPush[0], 'd')
 
-		popCount, runesPush = runeSliceDiff([]rune("deepin"), []rune("deeinp"))
-		c.So(popCount, ShouldEqual, 3)
-		c.So(len(runesPush), ShouldEqual, 3)
-		c.So(runesPush[0], ShouldEqual, 'p')
-		c.So(runesPush[1], ShouldEqual, 'i')
-		c.So(runesPush[2], ShouldEqual, 'n')
-	})
+	popCount, runesPush = runeSliceDiff([]rune("deepin"), []rune("deeinp"))
+	assert.Equal(t, popCount, 3)
+	assert.Equal(t, len(runesPush), 3)
+	assert.Equal(t, runesPush[0], 'p')
+	assert.Equal(t, runesPush[1], 'i')
+	assert.Equal(t, runesPush[2], 'n')
 }
 
 func Test_parseFlatpakAppCmdline(t *testing.T) {
-	Convey("test parseFlatpakAppCmdline", t, func(c C) {
-		info, err := parseFlatpakAppCmdline(`/usr/bin/flatpak run --branch=master --arch=x86_64 --command=blender --file-forwarding org.blender.Blender @@ %f @@`)
-		c.So(err, ShouldBeNil)
-		c.So(info, ShouldResemble, &flatpakAppInfo{
-			name:   "org.blender.Blender",
-			arch:   "x86_64",
-			branch: "master",
-		})
+	info, err := parseFlatpakAppCmdline(`/usr/bin/flatpak run --branch=master --arch=x86_64 --command=blender --file-forwarding org.blender.Blender @@ %f @@`)
+	assert.Nil(t, err)
+	assert.Equal(t, info, &flatpakAppInfo{
+		name:   "org.blender.Blender",
+		arch:   "x86_64",
+		branch: "master",
 	})
 }

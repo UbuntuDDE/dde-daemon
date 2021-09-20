@@ -24,18 +24,20 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.login1"
-	"pkg.deepin.io/lib/dbus1"
+	"github.com/godbus/dbus"
+	login1 "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.login1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/proxy"
 	"pkg.deepin.io/lib/log"
 )
 
+//go:generate dbusutil-gen em -type Manager
+
 // Manager manager logined user list
 type Manager struct {
 	service    *dbusutil.Service
 	sysSigLoop *dbusutil.SignalLoop
-	core       *login1.Manager
+	core       login1.Manager
 	logger     *log.Logger
 
 	userSessions map[uint32]SessionInfos
@@ -103,14 +105,14 @@ func (m *Manager) init() {
 
 func (m *Manager) handleChanged() {
 	m.core.InitSignalExt(m.sysSigLoop, true)
-	m.core.ConnectSessionNew(func(id string, sessionPath dbus.ObjectPath) {
+	_, _ = m.core.ConnectSessionNew(func(id string, sessionPath dbus.ObjectPath) {
 		m.logger.Debug("[Event] session new:", id, sessionPath)
 		added := m.addSession(sessionPath)
 		if added {
 			m.setPropUserList()
 		}
 	})
-	m.core.ConnectSessionRemoved(func(id string, sessionPath dbus.ObjectPath) {
+	_, _ = m.core.ConnectSessionRemoved(func(id string, sessionPath dbus.ObjectPath) {
 		m.logger.Debug("[Event] session remove:", id, sessionPath)
 		deleted := m.deleteSession(sessionPath)
 		if deleted {
@@ -135,8 +137,7 @@ func (m *Manager) addSession(sessionPath dbus.ObjectPath) bool {
 		return true
 	}
 
-	var added = false
-	infos, added = infos.Add(info)
+	infos, added := infos.Add(info)
 	m.userSessions[info.Uid] = infos
 	return added
 }
@@ -184,13 +185,13 @@ func (m *Manager) setPropUserList() {
 		return
 	}
 	m.UserList = string(data)
-	m.service.EmitPropertyChanged(m, "UserList", m.UserList)
+	_ = m.service.EmitPropertyChanged(m, "UserList", m.UserList)
 }
 
 func (m *Manager) setPropLastLogoutUser(uid uint32) {
 	if m.LastLogoutUser != uid {
 		m.LastLogoutUser = uid
-		m.service.EmitPropertyChanged(m, "LastLogoutUser", uid)
+		_ = m.service.EmitPropertyChanged(m, "LastLogoutUser", uid)
 	}
 }
 

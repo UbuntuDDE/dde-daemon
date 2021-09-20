@@ -52,6 +52,7 @@ const (
 	ErrCodeInvalidChar
 	ErrCodeFirstCharInvalid
 	ErrCodeExist
+	ErrCodeNameExist
 	ErrCodeSystemUsed
 	ErrCodeLen
 )
@@ -66,10 +67,11 @@ func (code ErrorCode) Error() *ErrorInfo {
 		err = errors.New("Username must only contain a~z, A-Z, 0~9, - or _")
 	case ErrCodeFirstCharInvalid:
 		err = errors.New(Tr("The first character must be a letter or number"))
-	case ErrCodeExist:
+	case ErrCodeExist, ErrCodeSystemUsed:
 		err = errors.New(Tr("The username already exists"))
-	case ErrCodeSystemUsed:
-		err = errors.New(Tr("The username has been used by system"))
+	case ErrCodeNameExist:
+		//提示校验项目与全名、组名或用户名是否相同
+		err = errors.New(Tr("The name already exists"))
 	case ErrCodeLen:
 		err = errors.New(Tr("Username must be between 3 and 32 characters"))
 	default:
@@ -101,6 +103,12 @@ func CheckUsernameValid(name string) *ErrorInfo {
 		}
 	}
 
+	// in euler version, linux kernel is 4.19.90
+	// do not allow create user already token by group
+	if Username(name).isNameInGroup() {
+		return ErrCodeNameExist.Error()
+	}
+
 	if !Username(name).isFirstCharValid() {
 		return ErrCodeFirstCharInvalid.Error()
 	}
@@ -129,21 +137,25 @@ func (name Username) isNameExist() bool {
 	return true
 }
 
-func (name Username) isStringValid() bool {
-	match := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-	if !match.MatchString(string(name)) {
+func (name Username) isNameInGroup() bool {
+	names, err := getAllUsername(groupFile)
+	if err != nil {
 		return false
 	}
-
+	if !isStrInArray(string(name), names) {
+		return false
+	}
 	return true
+}
+
+func (name Username) isStringValid() bool {
+	match := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	return match.MatchString(string(name))
 }
 
 func (name Username) isFirstCharValid() bool {
 	match := regexp.MustCompile(`^[a-zA-Z0-9]`)
-	if !match.MatchString(string(name)) {
-		return false
-	}
-	return true
+	return match.MatchString(string(name))
 }
 
 func (name Username) getUid() (int64, error) {

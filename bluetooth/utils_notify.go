@@ -22,13 +22,13 @@ package bluetooth
 import (
 	"fmt"
 	"os/exec"
-	"pkg.deepin.io/lib/dbusutil"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.notifications"
-	dbus "pkg.deepin.io/lib/dbus1"
+	dbus "github.com/godbus/dbus"
+	notifications "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.notifications"
+	"pkg.deepin.io/lib/dbusutil"
 	. "pkg.deepin.io/lib/gettext"
 )
 
@@ -44,14 +44,14 @@ const (
 
 const bluetoothDialog string = "dde-bluetooth-dialog"
 
-var globalNotifications *notifications.Notifications
+var globalNotifications notifications.Notifications
 var globalNotifyId uint32
 var globalNotifyMu sync.Mutex
 
 func initNotifications() error {
 	// init global notification timer instance
 	globalTimerNotifier = GetTimerNotifyInstance()
-	
+
 	sessionBus, err := dbus.SessionBus()
 	if err != nil {
 		return err
@@ -98,8 +98,10 @@ func notifyConnected(alias string) {
 	format := Tr("Connect %q successfully")
 	notify(notifyIconBluetoothConnected, "", fmt.Sprintf(format, alias))
 }
+
 func notifyDisconnected(alias string) {
-	notify(notifyIconBluetoothDisconnected, Tr("Disconnected"), alias)
+	format := Tr("%q disconnected")
+	notify(notifyIconBluetoothDisconnected, "", fmt.Sprintf(format, alias))
 }
 
 func notifyConnectFailedHostDown(alias string) {
@@ -109,6 +111,11 @@ func notifyConnectFailedHostDown(alias string) {
 
 func notifyConnectFailedAux(alias, format string) {
 	notify(notifyIconBluetoothConnectFailed, Tr("Bluetooth connection failed"), fmt.Sprintf(format, alias))
+}
+
+func notifyConnectFailedResourceUnavailable(alias, adapterAlias string) {
+	format := Tr("%q can no longer connect to %q. Try to forget this device and pair it again.")
+	notify(notifyIconBluetoothConnectFailed, Tr("Bluetooth connection failed"), fmt.Sprintf(format, adapterAlias, alias))
 }
 
 // notify pc initiative connect to device
@@ -128,7 +135,12 @@ func notifyInitiativeConnect(dev *device, pinCode string) error {
 		return err
 	}
 
-	go cmd.Wait()
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			logger.Warning(err)
+		}
+	}()
 
 	return nil
 }

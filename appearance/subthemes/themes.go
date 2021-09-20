@@ -25,11 +25,11 @@ import (
 	"path"
 	"strings"
 
+	"github.com/godbus/dbus"
 	"github.com/linuxdeepin/go-dbus-factory/com.deepin.api.cursorhelper"
 	"pkg.deepin.io/dde/api/theme_thumb"
 	"pkg.deepin.io/dde/api/themes"
 	"pkg.deepin.io/gir/gio-2.0"
-	"pkg.deepin.io/lib/dbus1"
 )
 
 const (
@@ -213,10 +213,7 @@ func getThemes(files []string) Themes {
 }
 
 func isDeletable(file string) bool {
-	if strings.Contains(file, home) {
-		return true
-	}
-	return false
+	return strings.Contains(file, home)
 }
 
 func isItemInList(item string, list []string) bool {

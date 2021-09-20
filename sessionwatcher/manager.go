@@ -22,13 +22,14 @@ package sessionwatcher
 import (
 	"sync"
 
-	"pkg.deepin.io/lib/dbus1"
+	"github.com/godbus/dbus"
+	libdisplay "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.display"
+	login1 "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.login1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/proxy"
-
-	libdisplay "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.display"
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.login1"
 )
+
+//go:generate dbusutil-gen em -type Manager
 
 const (
 	dbusServiceName = "com.deepin.daemon.SessionWatcher"
@@ -38,19 +39,15 @@ const (
 
 type Manager struct {
 	service           *dbusutil.Service
-	display           *libdisplay.Display
-	loginManager      *login1.Manager
+	display           libdisplay.Display
+	loginManager      login1.Manager
 	systemSigLoop     *dbusutil.SignalLoop
 	mu                sync.Mutex
-	sessions          map[string]*login1.Session
+	sessions          map[string]login1.Session
 	activeSessionType string
 
 	PropsMu  sync.RWMutex
 	IsActive bool
-	methods  *struct {
-		GetSessions        func() `out:"sessions"`
-		IsX11SessionActive func() `out:"is_active"`
-	}
 }
 
 var (
@@ -63,7 +60,7 @@ var (
 func newManager(service *dbusutil.Service) (*Manager, error) {
 	manager := &Manager{
 		service:  service,
-		sessions: make(map[string]*login1.Session),
+		sessions: make(map[string]login1.Session),
 	}
 	systemConn, err := dbus.SystemBus()
 	if err != nil {
@@ -109,17 +106,23 @@ func (m *Manager) initUserSessions() {
 	}
 	m.handleSessionChanged()
 
-	m.loginManager.ConnectSessionNew(func(id string, path dbus.ObjectPath) {
+	_, err = m.loginManager.ConnectSessionNew(func(id string, path dbus.ObjectPath) {
 		logger.Debug("Session added:", id, path)
 		m.addSession(id, path)
 		m.handleSessionChanged()
 	})
+	if err != nil {
+		logger.Warning("ConnectSessionNew error:", err)
+	}
 
-	m.loginManager.ConnectSessionRemoved(func(id string, path dbus.ObjectPath) {
+	_, err = m.loginManager.ConnectSessionRemoved(func(id string, path dbus.ObjectPath) {
 		logger.Debug("Session removed:", id, path)
 		m.deleteSession(id, path)
 		m.handleSessionChanged()
 	})
+	if err != nil {
+		logger.Warning("ConnectSessionRemoved error:", err)
+	}
 }
 
 func (m *Manager) addSession(id string, path dbus.ObjectPath) {
@@ -157,9 +160,12 @@ func (m *Manager) addSession(id string, path dbus.ObjectPath) {
 	m.mu.Unlock()
 
 	session.InitSignalExt(m.systemSigLoop, true)
-	session.Active().ConnectChanged(func(hasValue bool, value bool) {
+	err = session.Active().ConnectChanged(func(hasValue bool, value bool) {
 		m.handleSessionChanged()
 	})
+	if err != nil {
+		logger.Warning("ConnectChanged error:", err)
+	}
 }
 
 func (m *Manager) deleteSession(id string, path dbus.ObjectPath) {
@@ -209,7 +215,9 @@ func (m *Manager) handleSessionChanged() {
 		go suspendPulseSources(0)
 
 		logger.Debug("[handleSessionChanged] Refresh Brightness")
-		go m.display.RefreshBrightness(0)
+		go func() {
+			_ = m.display.RefreshBrightness(0)
+		}()
 	} else {
 		logger.Debug("[handleSessionChanged] Suspend pulse")
 		go suspendPulseSinks(1)
@@ -222,13 +230,16 @@ func (m *Manager) setIsActive(val bool) bool {
 	if m.IsActive != val {
 		m.IsActive = val
 		logger.Debug("[setIsActive] IsActive changed:", val)
-		m.service.EmitPropertyChanged(m, "IsActive", val)
+		err := m.service.EmitPropertyChanged(m, "IsActive", val)
+		if err != nil {
+			logger.Warning("EmitPropertyChanged error:", err)
+		}
 		return true
 	}
 	return false
 }
 
-func (m *Manager) getActiveSession() *login1.Session {
+func (m *Manager) getActiveSession() login1.Session {
 	for _, session := range m.sessions {
 		active, err := session.Active().Get(0)
 		if err != nil {
@@ -242,7 +253,7 @@ func (m *Manager) getActiveSession() *login1.Session {
 	return nil
 }
 
-func (m *Manager) IsX11SessionActive() (bool, *dbus.Error) {
+func (m *Manager) IsX11SessionActive() (active bool, busErr *dbus.Error) {
 	m.mu.Lock()
 	ty := m.activeSessionType
 	m.mu.Unlock()
@@ -254,12 +265,12 @@ func (m *Manager) IsX11SessionActive() (bool, *dbus.Error) {
 	return false, nil
 }
 
-func (m *Manager) GetSessions() (ret []dbus.ObjectPath, err *dbus.Error) {
+func (m *Manager) GetSessions() (sessions []dbus.ObjectPath, err *dbus.Error) {
 	m.mu.Lock()
-	ret = make([]dbus.ObjectPath, len(m.sessions))
+	sessions = make([]dbus.ObjectPath, len(m.sessions))
 	i := 0
 	for _, session := range m.sessions {
-		ret[i] = session.Path_()
+		sessions[i] = session.Path_()
 		i++
 	}
 	m.mu.Unlock()

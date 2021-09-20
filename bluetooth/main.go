@@ -38,7 +38,7 @@ func newBluetoothDaemon(logger *log.Logger) *daemon {
 }
 
 func (*daemon) GetDependencies() []string {
-	return []string{}
+	return []string{"audio"}
 }
 
 var globalBluetooth *Bluetooth
@@ -59,12 +59,12 @@ func HandlePrepareForSleep(sleep bool) {
 		if !aobj.Powered {
 			continue
 		}
-		_ = aobj.core.Discoverable().Set(0, globalBluetooth.config.Discoverable)
+		_ = aobj.core.Adapter().Discoverable().Set(0, globalBluetooth.config.Discoverable)
 	}
 	globalBluetooth.tryConnectPairedDevices()
 }
 
-func (*daemon) Start() error {
+func (d *daemon) Start() error {
 	if globalBluetooth != nil {
 		return nil
 	}
@@ -98,6 +98,14 @@ func (*daemon) Start() error {
 		logger.Warning("failed to export agent:", err)
 		return err
 	}
+
+	obexAgent := newObexAgent(service, globalBluetooth)
+	err = service.Export(obexAgentDBusPath, obexAgent)
+	if err != nil {
+		logger.Warning("failed to export obex agent:", err)
+		return err
+	}
+	globalBluetooth.obexAgent = obexAgent
 
 	err = initNotifications()
 	if err != nil {

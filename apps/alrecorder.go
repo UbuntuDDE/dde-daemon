@@ -26,9 +26,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.login1"
-
-	"pkg.deepin.io/lib/dbus1"
+	"github.com/fsnotify/fsnotify"
+	dbus "github.com/godbus/dbus"
+	login1 "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.login1"
 	"pkg.deepin.io/lib/dbusutil"
 )
 
@@ -45,15 +45,9 @@ type ALRecorder struct {
 	// key is SubRecorder.root
 	subRecorders      map[string]*SubRecorder
 	subRecordersMutex sync.RWMutex
-	loginManager      *login1.Manager
+	loginManager      login1.Manager
 
-	methods *struct {
-		GetNew         func() `out:"newApps"`
-		MarkLaunched   func() `in:"desktopFile"`
-		WatchDirs      func() `in:"dirs"`
-		UninstallHints func() `in:"desktopFiles"`
-	}
-
+	// nolint
 	signals *struct {
 		Launched struct {
 			file string
@@ -90,9 +84,12 @@ func newALRecorder(watcher *DFWatcher) (*ALRecorder, error) {
 	sysSigLoop := dbusutil.NewSignalLoop(systemBus, 10)
 	sysSigLoop.Start()
 	r.loginManager.InitSignalExt(sysSigLoop, true)
-	r.loginManager.ConnectUserRemoved(func(uid uint32, userPath dbus.ObjectPath) {
+	_, err = r.loginManager.ConnectUserRemoved(func(uid uint32, userPath dbus.ObjectPath) {
 		r.handleUserRemoved(int(uid))
 	})
+	if err != nil {
+		logger.Warning(err)
+	}
 
 	return r, nil
 }
@@ -134,14 +131,14 @@ func (r *ALRecorder) listenEvents() {
 		name := ev.Name
 
 		if isDesktopFile(name) {
-			if ev.IsFound || ev.IsCreate() || ev.IsModify() {
+			if ev.IsFound || (ev.Op&fsnotify.Create != 0) || (ev.Op&fsnotify.Write != 0) {
 				// added
 				r.handleAdded(name)
 			} else if ev.NotExist {
 				// removed
 				r.handleRemoved(name)
 			}
-		} else if ev.NotExist && ev.IsRename() {
+		} else if ev.NotExist && (ev.Op&fsnotify.Rename != 0) {
 			// may be dir removed
 			r.handleDirRemoved(name)
 		}
@@ -227,7 +224,7 @@ func (r *ALRecorder) MarkLaunched(file string) *dbus.Error {
 	return nil
 }
 
-func (r *ALRecorder) GetNew(sender dbus.Sender) (map[string][]string, *dbus.Error) {
+func (r *ALRecorder) GetNew(sender dbus.Sender) (newApps map[string][]string, busErr *dbus.Error) {
 	uid, err := r.Service().GetConnUID(string(sender))
 	if err != nil {
 		return nil, dbusutil.ToError(err)

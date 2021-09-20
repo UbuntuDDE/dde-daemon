@@ -25,23 +25,27 @@ import (
 	"strings"
 	"time"
 
+	dbus "github.com/godbus/dbus"
 	backlight "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.helper.backlight"
 	inputdevices "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.inputdevices"
+	keyevent "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.keyevent"
 	lockfront "github.com/linuxdeepin/go-dbus-factory/com.deepin.dde.lockfront"
+	shutdownfront "github.com/linuxdeepin/go-dbus-factory/com.deepin.dde.shutdownfront"
 	sessionmanager "github.com/linuxdeepin/go-dbus-factory/com.deepin.sessionmanager"
+	power "github.com/linuxdeepin/go-dbus-factory/com.deepin.system.power"
 	wm "github.com/linuxdeepin/go-dbus-factory/com.deepin.wm"
-
 	x "github.com/linuxdeepin/go-x11-client"
 	"github.com/linuxdeepin/go-x11-client/util/keysyms"
 	"pkg.deepin.io/dde/daemon/keybinding/shortcuts"
-	"pkg.deepin.io/gir/gio-2.0"
-	dbus "pkg.deepin.io/lib/dbus1"
+	gio "pkg.deepin.io/gir/gio-2.0"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/gsprop"
 	"pkg.deepin.io/lib/dbusutil/proxy"
 	"pkg.deepin.io/lib/gsettings"
 	"pkg.deepin.io/lib/xdg/basedir"
 )
+
+//go:generate dbusutil-gen em -type Manager
 
 const (
 	// shortcut signals:
@@ -91,16 +95,19 @@ type Manager struct {
 
 	customShortcutManager *shortcuts.CustomShortcutManager
 
-	lockFront *lockfront.LockFront
+	lockFront     lockfront.LockFront
+	shutdownFront shutdownfront.ShutdownFront
 
-	sessionSigLoop  *dbusutil.SignalLoop
-	systemSigLoop   *dbusutil.SignalLoop
-	startManager    *sessionmanager.StartManager
-	sessionManager  *sessionmanager.SessionManager
-	backlightHelper *backlight.Backlight
-	keyboard        *inputdevices.Keyboard
-	keyboardLayout  string
-	wm              *wm.Wm
+	sessionSigLoop            *dbusutil.SignalLoop
+	systemSigLoop             *dbusutil.SignalLoop
+	startManager              sessionmanager.StartManager
+	sessionManager            sessionmanager.SessionManager
+	backlightHelper           backlight.Backlight
+	keyboard                  inputdevices.Keyboard
+	keyboardLayout            string
+	wm                        wm.Wm
+	keyEvent                  keyevent.KeyEvent
+	specialKeycodeBindingList map[SpecialKeycodeMapKey]func()
 
 	// controllers
 	audioController       *AudioController
@@ -111,16 +118,17 @@ type Manager struct {
 
 	shortcutManager *shortcuts.ShortcutManager
 	// shortcut action handlers
-	handlers            []shortcuts.KeyEventFunc
-	lastKeyEventTime    time.Time
-	lastExecCmdTime     time.Time
-	lastMethodCalledTime    time.Time
-	grabScreenKeystroke *shortcuts.Keystroke
+	handlers             []shortcuts.KeyEventFunc
+	lastKeyEventTime     time.Time
+	lastExecCmdTime      time.Time
+	lastMethodCalledTime time.Time
+	grabScreenKeystroke  *shortcuts.Keystroke
 
 	// for switch kbd layout
 	switchKbdLayoutState SKLState
 	sklWaitQuit          chan int
 
+	//nolint
 	signals *struct {
 		Added, Deleted, Changed struct {
 			id  string
@@ -132,32 +140,6 @@ type Manager struct {
 			keystroke string
 		}
 	}
-
-	methods *struct {
-		AddCustomShortcut         func() `in:"name,action,keystroke" out:"id,type"`
-		AddShortcutKeystroke      func() `in:"id,type,keystroke"`
-		ClearShortcutKeystrokes   func() `in:"id,type"`
-		DeleteCustomShortcut      func() `in:"id"`
-		DeleteShortcutKeystroke   func() `in:"id,type,keystroke"`
-		GetShortcut               func() `in:"id,type" out:"shortcut"`
-		ListAllShortcuts          func() `out:"shortcuts"`
-		ListShortcutsByType       func() `in:"type" out:"shortcuts"`
-		SearchShortcuts           func() `in:"query" out:"shortcuts"`
-		LookupConflictingShortcut func() `in:"keystroke" out:"shortcut"`
-		ModifyCustomShortcut      func() `in:"id,name,cmd,keystroke"`
-		SetNumLockState           func() `in:"state"`
-		GetCapsLockState          func() `out:"state"`
-		SetCapsLockState          func() `in:"state"`
-
-		// deprecated
-		Add            func() `in:"name,action,keystroke" out:"ret0,ret1"`
-		Query          func() `in:"id,type" out:"shortcut"`
-		List           func() `out:"shortcuts"`
-		Delete         func() `in:"id,type"`
-		Disable        func() `in:"id,type"`
-		CheckAvaliable func() `in:"keystroke" out:"available,shortcut"`
-		ModifiedAccel  func() `in:"id,type,keystroke,add" out:"ret0,ret1"`
-	}
 }
 
 // SKLState Switch keyboard Layout state
@@ -168,14 +150,6 @@ const (
 	SKLStateWait
 	SKLStateOSDShown
 )
-
-func (m *Manager) systemConn() *dbus.Conn {
-	return m.systemSigLoop.Conn()
-}
-
-func (m *Manager) sessionConn() *dbus.Conn {
-	return m.sessionSigLoop.Conn()
-}
 
 func newManager(service *dbusutil.Service) (*Manager, error) {
 	conn, err := x.NewConn()
@@ -205,45 +179,43 @@ func newManager(service *dbusutil.Service) (*Manager, error) {
 	m.sessionSigLoop.Start()
 	m.systemSigLoop.Start()
 
-	if m.gsKeyboard.GetBoolean(gsKeySaveNumLockState) {
-		nlState := NumLockState(m.NumLockState.Get())
-		if nlState == NumLockUnknown {
-			state, err := queryNumLockState(m.conn)
-			if err != nil {
-				logger.Warning("queryNumLockState failed:", err)
-			} else {
-				m.NumLockState.Set(int32(state))
-			}
-		} else {
-			err := setNumLockState(m.conn, m.keySymbols, nlState)
-			if err != nil {
-				logger.Warning("setNumLockState failed:", err)
-			}
-		}
-	}
+	m.initNumLockState(sysBus)
 
 	// init settings
 	m.gsSystem = gio.NewSettings(gsSchemaSystem)
 	m.gsMediaKey = gio.NewSettings(gsSchemaMediaKey)
 	m.gsPower = gio.NewSettings(gsSchemaSessionPower)
+	m.wm = wm.NewWm(sessionBus)
+	m.keyEvent = keyevent.NewKeyEvent(sysBus)
 
 	m.shortcutManager = shortcuts.NewShortcutManager(m.conn, m.keySymbols, m.handleKeyEvent)
-	m.shortcutManager.AddSpecial()
-	m.shortcutManager.AddSystem(m.gsSystem)
+	m.shortcutManager.AddSystem(m.gsSystem, m.wm)
 	m.shortcutManager.AddMedia(m.gsMediaKey)
 
 	// when session is locked, we need handle some keyboard function event
 	m.lockFront = lockfront.NewLockFront(sessionBus)
 	m.lockFront.InitSignalExt(m.sessionSigLoop, true)
-	m.lockFront.ConnectChangKey(func(changKey string) {
+	_, err = m.lockFront.ConnectChangKey(func(changKey string) {
 		m.handleKeyEventFromLockFront(changKey)
 	})
+	if err != nil {
+		logger.Warning("connect ChangKey signal failed:", err)
+	}
 
-	m.wm = wm.NewWm(sessionBus)
+	m.shutdownFront = shutdownfront.NewShutdownFront(sessionBus)
+	m.shutdownFront.InitSignalExt(m.sessionSigLoop, true)
+	_, err = m.shutdownFront.ConnectChangKey(func(changKey string) {
+		m.handleKeyEventFromShutdownFront(changKey)
+	})
+	if err != nil {
+		logger.Warning("connect ChangKey signal failed:", err)
+	}
 
 	if shouldUseDDEKwin() {
+		logger.Debug("Use DDE KWin")
 		m.shortcutManager.AddKWin(m.wm)
 	} else {
+		logger.Debug("Use gnome WM")
 		m.gsGnomeWM = gio.NewSettings(gsSchemaGnomeWM)
 		m.shortcutManager.AddWM(m.gsGnomeWM)
 	}
@@ -260,7 +232,7 @@ func newManager(service *dbusutil.Service) (*Manager, error) {
 	m.sessionManager = sessionmanager.NewSessionManager(sessionBus)
 	m.keyboard = inputdevices.NewKeyboard(sessionBus)
 	m.keyboard.InitSignalExt(m.sessionSigLoop, true)
-	m.keyboard.CurrentLayout().ConnectChanged(func(hasValue bool, layout string) {
+	err = m.keyboard.CurrentLayout().ConnectChanged(func(hasValue bool, layout string) {
 		if !hasValue {
 			return
 		}
@@ -270,12 +242,64 @@ func newManager(service *dbusutil.Service) (*Manager, error) {
 			m.shortcutManager.NotifyLayoutChanged()
 		}
 	})
+	if err != nil {
+		logger.Warning("connect CurrentLayout property changed failed:", err)
+	}
 
 	m.displayController = NewDisplayController(m.backlightHelper, sessionBus)
 	m.kbdLightController = NewKbdLightController(m.backlightHelper)
 	m.touchPadController = NewTouchPadController(sessionBus)
 
+	m.initSpecialKeycodeMap()
+	m.keyEvent.InitSignalExt(m.systemSigLoop, true)
+	_, err = m.keyEvent.ConnectKeyEvent(m.handleSpecialKeycode)
+	if err != nil {
+		logger.Warning(err)
+	}
+
 	return &m, nil
+}
+
+// 初始化 NumLock 数字锁定键状态
+func (m *Manager) initNumLockState(sysBus *dbus.Conn) {
+	// 从 gsettings 读取相关设置
+	nlState := NumLockState(m.NumLockState.Get())
+	saveStateEnabled := m.gsKeyboard.GetBoolean(gsKeySaveNumLockState)
+	if nlState == NumLockUnknown {
+		// 判断是否是笔记本, 只根据电池状态，有电池则是笔记本。
+		isLaptop := false
+		sysPower := power.NewPower(sysBus)
+		hasBattery, err := sysPower.HasBattery().Get(0)
+		if err != nil {
+			logger.Warning("failed to get sysPower HasBattery property:", err)
+		} else if hasBattery {
+			isLaptop = true
+		}
+
+		state := NumLockUnknown
+		logger.Debug("isLaptop:", isLaptop)
+		if isLaptop {
+			// 笔记本，默认关闭。
+			state = NumLockOff
+		} else {
+			// 台式机等，默认开启。
+			state = NumLockOn
+		}
+
+		if saveStateEnabled {
+			// 保存新状态到 gsettings
+			m.NumLockState.Set(int32(state))
+		}
+		err = setNumLockState(m.conn, m.keySymbols, state)
+		if err != nil {
+			logger.Warning("setNumLockState failed:", err)
+		}
+	} else if saveStateEnabled {
+		err := setNumLockState(m.conn, m.keySymbols, nlState)
+		if err != nil {
+			logger.Warning("setNumLockState failed:", err)
+		}
+	}
 }
 
 func (m *Manager) handleKeyEventFromLockFront(changKey string) {
@@ -284,7 +308,8 @@ func (m *Manager) handleKeyEventFromLockFront(changKey string) {
 
 	// numlock/capslock
 	if action.Type == shortcuts.ActionTypeShowNumLockOSD ||
-		action.Type == shortcuts.ActionTypeShowCapsLockOSD {
+		action.Type == shortcuts.ActionTypeShowCapsLockOSD ||
+		action.Type == shortcuts.ActionTypeSystemShutdown {
 		if handler := m.handlers[int(action.Type)]; handler != nil {
 			handler(nil)
 		} else {
@@ -321,8 +346,23 @@ func (m *Manager) handleKeyEventFromLockFront(changKey string) {
 	}
 }
 
+func (m *Manager) handleKeyEventFromShutdownFront(changKey string) {
+	logger.Debugf("handleKeyEvent %s from ShutdownFront", changKey)
+	action := shortcuts.GetAction(changKey)
+	if action.Type == shortcuts.ActionTypeSystemShutdown {
+		if handler := m.handlers[int(action.Type)]; handler != nil {
+			handler(nil)
+		} else {
+			logger.Warning("handler is nil")
+		}
+	}
+}
+
 func (m *Manager) destroy() {
-	m.service.StopExport(m)
+	err := m.service.StopExport(m)
+	if err != nil {
+		logger.Warning("stop export failed:", err)
+	}
 
 	if m.shortcutManager != nil {
 		m.shortcutManager.Destroy()
@@ -360,6 +400,11 @@ func (m *Manager) destroy() {
 		m.keyboard = nil
 	}
 
+	if m.keyEvent != nil {
+		m.keyEvent.RemoveHandler(proxy.RemoveAllHandlers)
+		m.keyEvent = nil
+	}
+
 	if m.sessionSigLoop != nil {
 		m.sessionSigLoop.Stop()
 		m.sessionSigLoop = nil
@@ -389,12 +434,14 @@ func (m *Manager) handleKeyEvent(ev *shortcuts.KeyEvent) {
 
 	logger.Debugf("handleKeyEvent ev: %#v", ev)
 	action := ev.Shortcut.GetAction()
+	shortcutId := ev.Shortcut.GetId()
 	logger.Debugf("shortcut id: %s, type: %v, action: %#v",
-		ev.Shortcut.GetId(), ev.Shortcut.GetType(), action)
+		shortcutId, ev.Shortcut.GetType(), action)
 	if action == nil {
 		logger.Warning("action is nil")
 		return
 	}
+
 	if handler := m.handlers[int(action.Type)]; handler != nil {
 		handler(ev)
 	} else {
@@ -454,7 +501,10 @@ func (m *Manager) eliminateKeystrokeConflict() {
 		shortcut := ks.Shortcut
 		logger.Infof("eliminate conflict shortcut: %s keystroke: %s",
 			ks.Shortcut.GetUid(), ks)
-		m.DeleteShortcutKeystroke(shortcut.GetId(), shortcut.GetType(), ks.String())
+		err := m.DeleteShortcutKeystroke(shortcut.GetId(), shortcut.GetType(), ks.String())
+		if err != nil {
+			logger.Warning("delete shortcut keystroke failed:", err)
+		}
 	}
 
 	m.shortcutManager.ConflictingKeystrokes = nil

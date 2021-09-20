@@ -22,11 +22,12 @@ package shortcuts
 import (
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/godbus/dbus"
+	daemon "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.daemon"
 	wm "github.com/linuxdeepin/go-dbus-factory/com.deepin.wm"
 	x "github.com/linuxdeepin/go-x11-client"
 	"github.com/linuxdeepin/go-x11-client/ext/record"
@@ -34,10 +35,11 @@ import (
 	"github.com/linuxdeepin/go-x11-client/util/keysyms"
 	"github.com/linuxdeepin/go-x11-client/util/wm/ewmh"
 	"pkg.deepin.io/dde/daemon/keybinding/util"
-	"pkg.deepin.io/gir/gio-2.0"
+	gio "pkg.deepin.io/gir/gio-2.0"
 	"pkg.deepin.io/lib/gettext"
 	"pkg.deepin.io/lib/log"
 	"pkg.deepin.io/lib/pinyin_search"
+	dutils "pkg.deepin.io/lib/utils"
 )
 
 var logger *log.Logger
@@ -48,6 +50,10 @@ const (
 	SKLSuperSpace
 )
 
+const (
+	versionFile = "/etc/deepin-version"
+)
+
 func SetLogger(l *log.Logger) {
 	logger = l
 }
@@ -55,8 +61,9 @@ func SetLogger(l *log.Logger) {
 type KeyEventFunc func(ev *KeyEvent)
 
 type ShortcutManager struct {
-	conn     *x.Conn
-	dataConn *x.Conn // conn for receive record event
+	conn         *x.Conn
+	dataConn     *x.Conn // conn for receive record event
+	daemonDaemon daemon.Daemon
 
 	idShortcutMap     map[string]Shortcut
 	idShortcutMapMu   sync.Mutex
@@ -132,6 +139,11 @@ func NewShortcutManager(conn *x.Conn, keySymbols *keysyms.KeySymbols, eventCb Ke
 		go ss.recordEventLoop()
 	} else {
 		logger.Warning("init record failed: ", err)
+	}
+
+	err = ss.initSysDaemon()
+	if err != nil {
+		logger.Warning("init system D-BUS failed: ", err)
 	}
 
 	return ss
@@ -276,8 +288,6 @@ func (sm *ShortcutManager) ListByType(type0 int32) (list []Shortcut) {
 	return
 }
 
-var regSpace = regexp.MustCompile(`\s+`)
-
 func (sm *ShortcutManager) Search(query string) (list []Shortcut) {
 	query = pinyin_search.GeneralizeQuery(query)
 
@@ -340,9 +350,9 @@ func (sm *ShortcutManager) grabKeystroke(shortcut Shortcut, ks *Keystroke, dummy
 			// conflict
 			if conflictKeystroke.Shortcut != nil {
 				conflictCount++
-				logger.Debugf("key %v is grabed by %v", key, conflictKeystroke.Shortcut.GetId())
+				logger.Debugf("key %v is grabbed by %v", key, conflictKeystroke.Shortcut.GetId())
 			} else {
-				logger.Warningf("key %v is grabed, conflictKeystroke.Shortcut is nil", key)
+				logger.Warningf("key %v is grabbed, conflictKeystroke.Shortcut is nil", key)
 			}
 			continue
 		}
@@ -474,7 +484,7 @@ func dummyGrab(shortcut Shortcut, ks *Keystroke) bool {
 
 func (sm *ShortcutManager) UngrabAll() {
 	sm.keyKeystrokeMapMu.Lock()
-	// ungrab all grabed keys
+	// ungrab all grabbed keys
 	for key, keystroke := range sm.keyKeystrokeMap {
 		dummy := dummyGrab(keystroke.Shortcut, keystroke)
 		if !dummy {
@@ -612,11 +622,14 @@ func isKbdAlreadyGrabbed(conn *x.Conn) bool {
 	err := keybind.GrabKeyboard(conn, grabWin)
 	if err == nil {
 		// grab keyboard successful
-		keybind.UngrabKeyboard(conn)
+		err = keybind.UngrabKeyboard(conn)
+		if err != nil {
+			logger.Warning("ungrabKeyboard Failed:", err)
+		}
 		return false
 	}
 
-	logger.Warningf("GrabKeyboard win %d failed: %v", grabWin, err)
+	logger.Warningf("grabKeyboard win %d failed: %v", grabWin, err)
 
 	gkErr, ok := err.(keybind.GrabKeyboardError)
 	if ok && gkErr.Status == x.GrabStatusAlreadyGrabbed {
@@ -629,8 +642,48 @@ func (sm *ShortcutManager) SetAllModKeysReleasedCallback(cb func()) {
 	sm.xRecordEventHandler.allModKeysReleasedCb = cb
 }
 
+//get Active Window pid
+//注意: 从D-BUS启动dde-system-daemon的时候x会取不到环境变量,只能把获取pid放到dde-session-daemon
+func (sm *ShortcutManager) getActiveWindowPid() (uint32, error) {
+	activeWin, err := ewmh.GetActiveWindow(sm.conn).Reply(sm.conn)
+	if err != nil {
+		logger.Warning(err)
+		return 0, err
+	}
+
+	pid, err1 := ewmh.GetWMPid(sm.conn, activeWin).Reply(sm.conn)
+	if err1 != nil {
+		logger.Warning(err1)
+		return 0, err1
+	}
+
+	return uint32(pid), nil
+}
+
+func (sm *ShortcutManager) isPidVirtualMachine(pid uint32) (bool, error) {
+	ret, err := sm.daemonDaemon.IsPidVirtualMachine(0, pid)
+	if err != nil {
+		logger.Warning(err)
+		return ret, err
+	}
+
+	return ret, nil
+}
+
+//初始化go-dbus-factory system DBUS : com.deepin.daemon.Daemon
+func (sm *ShortcutManager) initSysDaemon() error {
+	sysBus, err := dbus.SystemBus()
+	if err != nil {
+		logger.Warning(err)
+		return err
+	}
+	sm.daemonDaemon = daemon.NewDaemon(sysBus)
+	return nil
+}
+
 func (sm *ShortcutManager) handleXRecordKeyEvent(pressed bool, code uint8, state uint16) {
 	sm.xRecordEventHandler.handleKeyEvent(pressed, code, state)
+
 	if pressed {
 		// Special handling screenshot* shortcuts
 		key := combineStateCode2Key(state, code)
@@ -640,7 +693,8 @@ func (sm *ShortcutManager) handleXRecordKeyEvent(pressed bool, code uint8, state
 		if ok {
 			shortcut := keystroke.Shortcut
 			if shortcut != nil && shortcut.GetType() == ShortcutTypeSystem &&
-				strings.HasPrefix(shortcut.GetId(), "screenshot") {
+				(strings.HasPrefix(shortcut.GetId(), "screenshot") ||
+					strings.HasPrefix(shortcut.GetId(), "deepin-screen-recorder")) {
 				keyEvent := &KeyEvent{
 					Mods:     key.Mods,
 					Code:     key.Code,
@@ -777,20 +831,33 @@ func (sm *ShortcutManager) FindConflictingKeystroke(ks *Keystroke) (*Keystroke, 
 	return nil, nil
 }
 
-func (sm *ShortcutManager) AddSystem(gsettings *gio.Settings) {
+func (sm *ShortcutManager) AddSystem(gsettings *gio.Settings, wmObj wm.Wm) {
 	logger.Debug("AddSystem")
 	idNameMap := getSystemIdNameMap()
+	allow, err := wmObj.CompositingAllowSwitch().Get(0)
+	if err != nil {
+		logger.Warning(err)
+		allow = false
+	}
+	session := os.Getenv("XDG_SESSION_TYPE")
 	for _, id := range gsettings.ListKeys() {
+		if id == "deepin-screen-recorder" || id == "wm-switcher" {
+			if !allow && id == "wm-switcher" {
+				logger.Debugf("com.deepin.wm.compositingAllowSwitch is false, filter %s", id)
+				continue
+			}
+
+			if strings.Contains(session, "wayland") {
+				logger.Debugf("XDG_SESSION_TYPE is %s, filter %s", session, id)
+				continue
+			}
+		}
+
 		name := idNameMap[id]
 		if name == "" {
 			name = id
 		}
-		session := os.Getenv("XDG_SESSION_TYPE")
-		if strings.Contains(session, "wayland") {
-			if id == "deepin-screen-recorder" || id == "wm-switcher" {
-				continue
-			}
-		}
+
 		cmd := getSystemActionCmd(id)
 		if id == "terminal-quake" && strings.Contains(cmd, "deepin-terminal") {
 			termPath, _ := exec.LookPath("deepin-terminal")
@@ -814,7 +881,12 @@ func (sm *ShortcutManager) AddSystem(gsettings *gio.Settings) {
 func (sm *ShortcutManager) AddWM(gsettings *gio.Settings) {
 	logger.Debug("AddWM")
 	idNameMap := getWMIdNameMap()
+	releaseType := getDeepinReleaseType()
 	for _, id := range gsettings.ListKeys() {
+		if releaseType == "Server" && strings.Contains(id, "workspace") {
+			logger.Debugf("release type is server filter '%s'", id)
+			continue
+		}
 		name := idNameMap[id]
 		if name == "" {
 			name = id
@@ -850,22 +922,7 @@ func (sm *ShortcutManager) AddCustom(csm *CustomShortcutManager) {
 	}
 }
 
-func (sm *ShortcutManager) AddSpecial() {
-	idNameMap := getSpecialIdNameMap()
-
-	// add SwitchKbdLayout <Super>space
-	s0 := NewFakeShortcut(&Action{Type: ActionTypeSwitchKbdLayout, Arg: SKLSuperSpace})
-	ks, err := ParseKeystroke("<Super>space")
-	if err != nil {
-		panic(err)
-	}
-	s0.Id = "switch-kbd-layout"
-	s0.Name = idNameMap[s0.Id]
-	s0.Keystrokes = []*Keystroke{ks}
-	sm.addWithoutLock(s0)
-}
-
-func (sm *ShortcutManager) AddKWin(wmObj *wm.Wm) {
+func (sm *ShortcutManager) AddKWin(wmObj wm.Wm) {
 	logger.Debug("AddKWin")
 	accels, err := util.GetAllKWinAccels(wmObj)
 	if err != nil {
@@ -874,8 +931,13 @@ func (sm *ShortcutManager) AddKWin(wmObj *wm.Wm) {
 	}
 
 	idNameMap := getWMIdNameMap()
+	releaseType := getDeepinReleaseType()
 
 	for _, accel := range accels {
+		if releaseType == "Server" && strings.Contains(accel.Id, "workspace") {
+			logger.Debugf("release type is server filter '%s'", accel.Id)
+			continue
+		}
 		name := idNameMap[accel.Id]
 		if name == "" {
 			name = accel.Id
@@ -889,4 +951,21 @@ func (sm *ShortcutManager) AddKWin(wmObj *wm.Wm) {
 func isZH() bool {
 	lang := gettext.QueryLang()
 	return strings.HasPrefix(lang, "zh")
+}
+
+func getDeepinReleaseType() string {
+	keyFile, err := dutils.NewKeyFileFromFile(versionFile)
+	if err != nil {
+		logger.Warningf("failed to open '%s' : %s", versionFile, err)
+		return ""
+	}
+	defer keyFile.Free()
+	releaseType, err := keyFile.GetString("Release", "Type")
+	if err != nil {
+		logger.Warningf("failed to get release type : %s", err)
+		return ""
+	}
+
+	logger.Debugf("release type is %s", releaseType)
+	return releaseType
 }

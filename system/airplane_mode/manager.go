@@ -9,9 +9,9 @@ import (
 	"os/exec"
 	"sync"
 
+	dbus "github.com/godbus/dbus"
 	nmdbus "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.networkmanager"
 	polkit "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.policykit1"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 )
 
@@ -24,10 +24,11 @@ const (
 )
 
 //go:generate dbusutil-gen -type Manager manager.go
+//go:generate dbusutil-gen em -type Manager
 
 type Manager struct {
 	service   *dbusutil.Service
-	nmManager *nmdbus.Manager
+	nmManager nmdbus.Manager
 	sigLoop   *dbusutil.SignalLoop
 
 	PropsMu          sync.RWMutex
@@ -36,12 +37,6 @@ type Manager struct {
 	BluetoothEnabled bool
 
 	state AirplaneModeState
-
-	methods *struct {
-		Enable          func() `in:"enabled"`
-		EnableWifi      func() `in:"enabled"`
-		EnableBluetooth func() `in:"enabled"`
-	}
 }
 
 func (m *Manager) GetInterfaceName() string {

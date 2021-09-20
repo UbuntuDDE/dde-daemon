@@ -20,10 +20,12 @@
 package screenedge
 
 import (
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.wm"
+	wm "github.com/linuxdeepin/go-dbus-factory/com.deepin.wm"
 	"pkg.deepin.io/dde/daemon/common/dsync"
 	"pkg.deepin.io/lib/dbusutil"
 )
+
+//go:generate dbusutil-gen em -type Manager
 
 const (
 	TopLeft     = "left-up"
@@ -41,21 +43,9 @@ const (
 type Manager struct {
 	service        *dbusutil.Service
 	settings       *Settings
-	wm             *wm.Wm
+	wm             wm.Wm
 	sessionSigLoop *dbusutil.SignalLoop
 	syncConfig     *dsync.Config
-
-	methods *struct {
-		EnableZoneDetected func() `in:"enabled"`
-		SetTopLeft         func() `in:"value"`
-		TopLeftAction      func() `out:"value"`
-		SetBottomLeft      func() `in:"value"`
-		BottomLeftAction   func() `out:"value"`
-		SetTopRight        func() `in:"value"`
-		TopRightAction     func() `out:"value"`
-		SetBottomRight     func() `in:"value"`
-		BottomRightAction  func() `out:"value"`
-	}
 }
 
 func newManager(service *dbusutil.Service) *Manager {

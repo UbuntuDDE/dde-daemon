@@ -21,6 +21,7 @@ package dock
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	x "github.com/linuxdeepin/go-x11-client"
@@ -73,14 +74,15 @@ func (m *Manager) handleClientListChanged() {
 	m.clientList = newClientList
 
 	if len(add) > 0 {
-		logger.Debug("client list add:", add)
 		for _, win := range add {
 			window0 := win
-			winInfo := m.registerWindow(window0)
-			go func() {
+			addFunc := func() {
+				logger.Debugf("client list add: %d", window0)
+				winInfo := m.registerWindow(window0)
 				repeatCount := 0
 				for {
 					if repeatCount > 10 {
+						logger.Debugf("give up identify window %d", window0)
 						return
 					}
 					good := isGoodWindow(window0)
@@ -89,29 +91,44 @@ func (m *Manager) handleClientListChanged() {
 					}
 					pid := getWmPid(window0)
 					wmClass, _ := getWmClass(window0)
-					if pid != 0 || wmClass != nil {
+					wmName := getWmName(window0)
+					wmCmd, _ := getWmCommand(window0)
+					if pid != 0 || wmClass != nil || wmName != "" || strings.Join(wmCmd, "") != "" {
 						m.attachOrDetachWindow(winInfo)
 						return
 					}
 					repeatCount++
 					time.Sleep(100 * time.Millisecond)
 				}
-			}()
-
+			}
+			m.entryDealChan <- addFunc
 		}
 	}
 
 	if len(remove) > 0 {
-		logger.Debug("client list remove:", remove)
 		for _, win := range remove {
-
-			m.windowInfoMapMutex.RLock()
-			winInfo := m.windowInfoMap[win]
-			m.windowInfoMapMutex.RUnlock()
-			if winInfo != nil {
-				m.detachWindow(winInfo)
-				winInfo.entryInnerId = ""
+			window0 := win
+			removeFunc := func() {
+				logger.Debugf("client list remove: %d", window0)
+				m.windowInfoMapMutex.RLock()
+				winInfo := m.windowInfoMap[window0]
+				m.windowInfoMapMutex.RUnlock()
+				if winInfo != nil {
+					m.detachWindow(winInfo)
+					winInfo.entryInnerId = ""
+				} else {
+					logger.Warningf("window info of %d is nil", window0)
+					entry := m.Entries.getByWindowId(window0)
+					if entry != nil {
+						entry.PropsMu.RLock()
+						if !entry.IsDocked {
+							m.removeAppEntry(entry)
+						}
+						entry.PropsMu.RUnlock()
+					}
+				}
 			}
+			m.entryDealChan <- removeFunc
 		}
 	}
 }
@@ -189,6 +206,7 @@ func (m *Manager) handleMapNotifyEvent(ev *x.MapNotifyEvent) {
 	logger.Debug("MapNotifyEvent window:", ev.Window)
 	winInfo := m.registerWindow(ev.Window)
 	time.AfterFunc(2*time.Second, func() {
+		logger.Warningf("mapNotifyEvent after 2s, call identifyWindow, win: %d", winInfo.window)
 		_, appInfo := m.identifyWindow(winInfo)
 		m.markAppLaunched(appInfo)
 	})

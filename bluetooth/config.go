@@ -20,6 +20,7 @@
 package bluetooth
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -68,15 +69,21 @@ func newConfig() (c *config) {
 }
 
 func (c *config) load() {
-	c.core.Load(c)
+	err := c.core.Load(c)
+	if err != nil {
+		logger.Warning(err)
+	}
 }
 
 func (c *config) save() {
-	c.core.Save(c)
+	err := c.core.Save(c)
+	if err != nil {
+		logger.Warning(err)
+	}
 }
 
 func newAdapterConfig() (ac *adapterConfig) {
-	ac = &adapterConfig{Powered: true}
+	ac = &adapterConfig{Powered: false}
 	return
 }
 
@@ -142,20 +149,6 @@ func (c *config) addAdapterConfig(address string) {
 	c.save()
 }
 
-func (c *config) removeAdapterConfig(address string) {
-	c.core.Lock()
-	delete(c.Adapters, address)
-	c.core.Unlock()
-	c.save()
-}
-
-func (c *config) getAdapterConfig(address string) (ac *adapterConfig, ok bool) {
-	c.core.Lock()
-	defer c.core.Unlock()
-	ac, ok = c.Adapters[address]
-	return
-}
-
 func (c *config) isAdapterConfigExists(address string) (ok bool) {
 	c.core.Lock()
 	defer c.core.Unlock()
@@ -179,7 +172,6 @@ func (c *config) setAdapterConfigPowered(address string, powered bool) {
 	}
 	c.core.Unlock()
 	c.save()
-	return
 }
 
 func newDeviceConfig() (ac *deviceConfig) {
@@ -206,7 +198,7 @@ func (c *config) addDeviceConfig(addDevice *device) {
 	deviceInfo.Icon = addDevice.Icon
 	// connect status is set false as default,so device has not been connected yet
 	deviceInfo.LatestTime = 0
-	deviceInfo.Connected = false
+	deviceInfo.Connected = addDevice.connected
 	//add device info to devices map
 	c.Devices[addDevice.getAddress()] = deviceInfo
 	c.core.Unlock()
@@ -218,13 +210,6 @@ func (c *config) getDeviceConfig(address string) (dc *deviceConfig, ok bool) {
 	defer c.core.Unlock()
 	dc, ok = c.Devices[address]
 	return
-}
-
-func (c *config) removeDeviceConfig(address string) {
-	c.core.Lock()
-	delete(c.Devices, address)
-	c.core.Unlock()
-	c.save()
 }
 
 func (c *config) getDeviceConfigConnected(address string) (connected bool) {
@@ -239,6 +224,9 @@ func (c *config) getDeviceConfigConnected(address string) (connected bool) {
 }
 
 func (c *config) setDeviceConfigConnected(device *device, connected bool) {
+	if device == nil {
+		return
+	}
 	dc, ok := c.getDeviceConfig(device.getAddress())
 	if !ok {
 		return
@@ -249,34 +237,23 @@ func (c *config) setDeviceConfigConnected(device *device, connected bool) {
 	// when status is connect, set connected status as true, update latest time
 	dc.Connected = connected
 	dc.Icon = device.Icon
-	if connected == true {
+	if connected {
 		dc.LatestTime = time.Now().Unix()
 	}
 
 	c.core.Unlock()
 
 	c.save()
-	return
 }
 
 // select latest devices from devAddressMap, each type only contain one device
 func (c *config) filterDemandedTypeDevices(devAddressMap map[string]*device) []*device {
-	// prepare map to contain different type device, each device is distributed one nil element
-	// to fill suitable device
-	typeDeviceConfigMap := make(map[string][]*deviceConfigWithAddress, len(DeviceTypes))
-	for _, value := range DeviceTypes {
-		typeDeviceConfigMap[value] = nil
-	}
+	var typeDeviceConfigSlice []*deviceConfigWithAddress
 
 	// find latest devices to fill ordered type device
 	for _, deviceUnit := range devAddressMap {
 		// if device's address is empty, ignore this device
 		if deviceUnit.getAddress() == "" {
-			continue
-		}
-
-		// check if device type is included in required types
-		if _, ok := typeDeviceConfigMap[deviceUnit.Icon]; !ok {
 			continue
 		}
 
@@ -290,51 +267,31 @@ func (c *config) filterDemandedTypeDevices(devAddressMap map[string]*device) []*
 		if !deviceUnit.Paired || deviceUnit.connected {
 			continue
 		}
-
-		// only audio card try to auto connect one device
-		// other devices try to auto connect all devices
-		if deviceUnit.Icon != DeviceTypes[AudioCard] {
-			typeDeviceConfigMap[deviceUnit.Icon] = append(typeDeviceConfigMap[deviceUnit.Icon], &deviceConfigWithAddress{
-				Icon:       devConfig.Icon,
-				Connected:  devConfig.Connected,
-				LatestTime: devConfig.LatestTime,
-				Address:    deviceUnit.getAddress(),
-			})
-		} else {
-			// some type devices can only auto connect once
-			var recentlyDev *deviceConfigWithAddress
-			if len(typeDeviceConfigMap[deviceUnit.Icon]) == 0 {
-				recentlyDev = nil
-				typeDeviceConfigMap[deviceUnit.Icon] = make([]*deviceConfigWithAddress, 1)
-			} else {
-				recentlyDev = typeDeviceConfigMap[deviceUnit.Icon][0]
-			}
-			// if element in target address is nil or time is less than new time, then replace the element
-			if recentlyDev == nil || recentlyDev.LatestTime < devConfig.LatestTime {
-				typeDeviceConfigMap[deviceUnit.Icon][0] = &deviceConfigWithAddress{
-					Icon:       devConfig.Icon,
-					Connected:  devConfig.Connected,
-					LatestTime: devConfig.LatestTime,
-					Address:    deviceUnit.getAddress(),
-				}
-			}
-		}
+		typeDeviceConfigSlice = append(typeDeviceConfigSlice, &deviceConfigWithAddress{
+			Icon:       devConfig.Icon,
+			Connected:  devConfig.Connected,
+			LatestTime: devConfig.LatestTime,
+			Address:    deviceUnit.getAddress(),
+		})
 	}
+
+	// sort device according to latest connected time
+	sort.SliceStable(typeDeviceConfigSlice, func(pre, next int) bool {
+		return typeDeviceConfigSlice[pre].LatestTime > typeDeviceConfigSlice[next].LatestTime
+	})
+
 	// add all filtered devices to device list
 	var deviceList []*device
-	for _, deviceConfigs := range typeDeviceConfigMap {
+	for _, devCfg := range typeDeviceConfigSlice {
 		// check if type devices is nil
-		if deviceConfigs == nil {
+		if devCfg == nil {
 			continue
 		}
-		// select device from devAddressMap, add device to device list
-		for _, devCfg := range deviceConfigs {
-			if devCfg == nil {
-				continue
-			}
-			deviceList = append(deviceList, devAddressMap[devCfg.Address])
-		}
+		logger.Debug("devAddressMap", devCfg.LatestTime, devCfg.Address, devCfg.Connected)
+		// add auto connect device to list
+		deviceList = append(deviceList, devAddressMap[devCfg.Address])
 	}
 	logger.Debugf("all auto connect device is %v", deviceList)
+
 	return deviceList
 }

@@ -37,7 +37,6 @@ const (
 	userFileSudoers   = "/etc/sudoers"
 
 	itemLenPasswd    = 7
-	itemLenShadow    = 9
 	itemLenGroup     = 4
 	itemLenLoginDefs = 2
 )
@@ -90,6 +89,11 @@ func GetHumanUserInfos() (UserInfos, error) {
 	infos = infos.filterUserInfos()
 
 	return infos, nil
+}
+
+func IsHumanUdcpUserUid(uid uint32) bool {
+	userInfo := UserInfo{Uid: strconv.FormatUint(uint64(uid), 10)}
+	return userInfo.isHumanViaLoginDefs(userFileLoginDefs)
 }
 
 func GetUserInfoByName(name string) (UserInfo, error) {
@@ -173,6 +177,9 @@ func (infos UserInfos) filterUserInfos() UserInfos {
 
 func (info UserInfo) isHumanUser(configLoginDefs string) bool {
 	if info.Name == "root" {
+		if systemType() == "Server" {
+			return true
+		}
 		return false
 	}
 

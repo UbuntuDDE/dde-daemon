@@ -22,16 +22,16 @@ package dock
 import (
 	"time"
 
+	"github.com/godbus/dbus"
 	libApps "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.apps"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.dde.daemon.launcher"
+	launcher "github.com/linuxdeepin/go-dbus-factory/com.deepin.dde.daemon.launcher"
 	libDDELauncher "github.com/linuxdeepin/go-dbus-factory/com.deepin.dde.launcher"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.sessionmanager"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.wm"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.wmswitcher"
-	"github.com/linuxdeepin/go-x11-client"
+	sessionmanager "github.com/linuxdeepin/go-dbus-factory/com.deepin.sessionmanager"
+	wm "github.com/linuxdeepin/go-dbus-factory/com.deepin.wm"
+	wmswitcher "github.com/linuxdeepin/go-dbus-factory/com.deepin.wmswitcher"
+	x "github.com/linuxdeepin/go-x11-client"
 	"pkg.deepin.io/dde/daemon/common/dsync"
 	"pkg.deepin.io/gir/gio-2.0"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/gsettings"
 )
@@ -46,16 +46,20 @@ func (m *Manager) initEntries() {
 	m.Entries.insertCb = func(entry *AppEntry, index int) {
 		entryObjPath := dbus.ObjectPath(entryDBusObjPathPrefix + entry.Id)
 		logger.Debug("entry added", entry.Id, index)
-		m.service.Emit(m, "EntryAdded", entryObjPath, int32(index))
+		_ = m.service.Emit(m, "EntryAdded", entryObjPath, int32(index))
 	}
 	m.Entries.removeCb = func(entry *AppEntry) {
-		m.service.Emit(m, "EntryRemoved", entry.Id)
+		_ = m.service.Emit(m, "EntryRemoved", entry.Id)
 		go func() {
 			time.Sleep(time.Second)
-			m.service.StopExport(entry)
+			err := m.service.StopExport(entry)
+			if err != nil {
+				logger.Warning("StopExport error:", err)
+			}
 		}()
 	}
 	m.initClientList()
+	m.clientListInitEnd = true
 }
 
 func (m *Manager) connectSettingKeyChanged(key string, handler func(key string)) {
@@ -119,7 +123,6 @@ func (m *Manager) handleLauncherItemDeleted(itemInfo launcher.ItemInfo) {
 	for _, entry := range dockedEntries {
 		file := entry.appInfo.GetFileName()
 		if file == itemInfo.Path {
-			m.tempUndockedFiles, _ = m.tempUndockedFiles.Add(file)
 			m.undockEntry(entry)
 			return
 		}
@@ -127,13 +130,31 @@ func (m *Manager) handleLauncherItemDeleted(itemInfo launcher.ItemInfo) {
 }
 
 func (m *Manager) handleLauncherItemCreated(itemInfo launcher.ItemInfo) {
-	if m.tempUndockedFiles.Contains(itemInfo.Path) {
-		_, err := m.requestDock(itemInfo.Path, -1)
-		if err != nil {
-			logger.Warning(err)
-		}
-		m.tempUndockedFiles, _ = m.tempUndockedFiles.Delete(itemInfo.Path)
+
+}
+
+// 在收到 launcher item 更新的信号后，需要更新相关信息，包括 appInfo、innerId、名称、图标、菜单。
+func (m *Manager) handleLauncherItemUpdated(itemInfo launcher.ItemInfo) {
+	desktopFile := toLocalPath(itemInfo.Path)
+	entry, err := m.Entries.GetByDesktopFilePath(desktopFile)
+	if err != nil {
+		logger.Warning(err)
+		return
 	}
+	if entry == nil {
+		return
+	}
+
+	appInfo := NewAppInfoFromFile(desktopFile)
+	if appInfo == nil {
+		logger.Warningf("failed to new app info from file %q: %v", desktopFile, err)
+		return
+	}
+	entry.setAppInfo(appInfo)
+	entry.innerId = appInfo.innerId
+	entry.updateName()
+	entry.updateMenu()
+	entry.updateIcon()
 }
 
 func (m *Manager) listenLauncherSignal() {
@@ -148,7 +169,7 @@ func (m *Manager) listenLauncherSignal() {
 		case "created":
 			m.handleLauncherItemCreated(itemInfo)
 		case "updated":
-			// TODO: handle launcher item updated
+			m.handleLauncherItemUpdated(itemInfo)
 		}
 	})
 	if err != nil {
@@ -237,6 +258,9 @@ func (m *Manager) init() error {
 	if m.DisplayMode.Get() == int32(DisplayModeClassicMode) {
 		m.DisplayMode.Set(int32(DisplayModeEfficientMode))
 	}
+
+	m.entryDealChan = make(chan func(), 64)
+	go m.accessEntries()
 
 	go m.eventHandleLoop()
 	m.listenRootWindowXEvent()

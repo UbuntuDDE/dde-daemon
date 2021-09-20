@@ -92,72 +92,104 @@ func (l *Loader) SetLogLevel(pri log.Priority) {
 func (l *Loader) AddModule(m Module) {
 	l.lock.Lock()
 	defer l.lock.Unlock()
-
-	tmp := l.modules.Get(m.Name())
-	if tmp != nil {
-		l.log.Debug("Register", m.Name(), "is already registered")
+	name := m.Name()
+	_, exist := l.modules[name]
+	if exist {
+		l.log.Debug("Register", name, "is already registered")
 		return
 	}
-
-	l.log.Debug("Register module:", m.Name())
-	l.modules = append(l.modules, m)
+	l.log.Debug("Register module:", name)
+	l.modules[name] = m
 }
 
 func (l *Loader) DeleteModule(name string) {
 	l.lock.Lock()
 	defer l.lock.Unlock()
-	l.modules, _ = l.modules.Delete(name)
+	delete(l.modules, name)
 }
 
 func (l *Loader) List() []Module {
-	var modules Modules
-
 	l.lock.Lock()
-	for _, module := range l.modules {
-		modules = append(modules, module)
+	defer l.lock.Unlock()
+	modules := make([]Module, 0, len(l.modules))
+	for _, m := range l.modules {
+		modules = append(modules, m)
 	}
-	l.lock.Unlock()
-
 	return modules
 }
 
 func (l *Loader) GetModule(name string) Module {
 	l.lock.Lock()
 	defer l.lock.Unlock()
-	return l.modules.Get(name)
+	return l.modules[name]
+}
+
+func (l *Loader) WaitDependencies(module Module) {
+	for _, dependencyName := range module.GetDependencies() {
+		l.modules[dependencyName].WaitEnable()
+	}
 }
 
 func (l *Loader) EnableModules(enablingModules []string, disableModules []string, flag EnableFlag) error {
 	l.lock.Lock()
 	defer l.lock.Unlock()
 
+	// build a dag
+	startTime := time.Now()
 	builder := NewDAGBuilder(l, enablingModules, disableModules, flag)
 	dag, err := builder.Execute()
 	if err != nil {
 		return err
 	}
+	endTime := time.Now()
+	duration := endTime.Sub(startTime)
+	l.log.Infof("build dag done, cost %s", duration)
 
+	// perform a topo sort
 	nodes, ok := dag.TopologicalDag()
 	if !ok {
 		return &EnableError{Code: ErrorCircleDependencies}
 	}
+	endTime = time.Now()
+	duration = endTime.Sub(startTime)
+	l.log.Infof("topo sort done, cost add up to %s", duration)
 
-	for _, name := range enablingModules {
-		node := nodes.Get(name)
+	// enable modules
+	for _, node := range nodes {
 		if node == nil {
 			continue
 		}
-		module := l.modules.Get(node.ID)
-		l.log.Info("enable module", node.ID)
-		startTime := time.Now()
-		err := module.Enable(true)
-		endTime := time.Now()
-		duration := endTime.Sub(startTime)
-		if err != nil {
-			l.log.Fatalf("enable module %s failed: %s, cost %s", node.ID, err, duration)
-		}
-		l.log.Info("enable module", node.ID, "done, cost", duration)
+		module := l.modules[node.ID]
+		name := node.ID
+
+		go func() {
+			l.log.Info("enable module", name)
+			startTime := time.Now()
+
+			// wait for its dependency
+			l.WaitDependencies(module)
+			endTime := time.Now()
+			duration := endTime.Sub(startTime)
+			l.log.Info("module", name, "wait done, cost", duration)
+
+			err := module.Enable(true)
+			endTime = time.Now()
+			duration = endTime.Sub(startTime)
+			if err != nil {
+				l.log.Fatalf("enable module %s failed: %s, cost %s", name, err, duration)
+			} else {
+				l.log.Infof("enable module %s done cost %s", name, duration)
+			}
+		}()
 	}
 
+	for _, n := range nodes {
+		m := l.modules[n.ID]
+		m.WaitEnable()
+	}
+
+	endTime = time.Now()
+	duration = endTime.Sub(startTime)
+	l.log.Infof("enable modules done, cost add up to %s", duration)
 	return nil
 }

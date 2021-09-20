@@ -23,23 +23,29 @@ import (
 	"os/user"
 	"sync"
 
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.accounts"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.timedated"
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.timedate1"
+	"github.com/godbus/dbus"
+	accounts "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.accounts"
+	timedated "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.timedated"
+	timedate1 "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.timedate1"
 	ddbus "pkg.deepin.io/dde/daemon/dbus"
 	"pkg.deepin.io/dde/daemon/session/common"
 	"pkg.deepin.io/gir/gio-2.0"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/gsprop"
 	"pkg.deepin.io/lib/dbusutil/proxy"
 )
 
 const (
-	timeDateSchema          = "com.deepin.dde.datetime"
-	settingsKey24Hour       = "is-24hour"
-	settingsKeyTimezoneList = "user-timezone-list"
-	settingsKeyDSTOffset    = "dst-offset"
+	timeDateSchema             = "com.deepin.dde.datetime"
+	settingsKey24Hour          = "is-24hour"
+	settingsKeyTimezoneList    = "user-timezone-list"
+	settingsKeyDSTOffset       = "dst-offset"
+	settingsKeyWeekdayFormat   = "weekday-format"
+	settingsKeyShortDateFormat = "short-date-format"
+	settingsKeyLongDateFormat  = "long-date-format"
+	settingsKeyShortTimeFormat = "short-time-format"
+	settingsKeyLongTimeFormat  = "long-time-format"
+	settingsKeyWeekBegins      = "week-begins"
 
 	dbusServiceName = "com.deepin.daemon.Timedate"
 	dbusPath        = "/com/deepin/daemon/Timedate"
@@ -47,6 +53,8 @@ const (
 )
 
 //go:generate dbusutil-gen -type Manager manager.go
+//go:generate dbusutil-gen em -type Manager
+
 // Manage time settings
 type Manager struct {
 	service       *dbusutil.Service
@@ -71,23 +79,32 @@ type Manager struct {
 	// User added timezone list
 	UserTimezones gsprop.Strv
 
-	settings *gio.Settings
-	td       *timedate1.Timedate
-	setter   *timedated.Timedated
-	userObj  *accounts.User
+	// weekday shows format
+	WeekdayFormat gsprop.Int `prop:"access:rw"`
 
-	methods *struct {
-		SetDate             func() `in:"year,month,day,hour,min,sec,nsec"`
-		SetTime             func() `in:"usec,relative"`
-		SetNTP              func() `in:"useNTP"`
-		SetNTPServer        func() `in:"server"`
-		GetSampleNTPServers func() `out:"servers"`
-		SetLocalRTC         func() `in:"localeRTC,fixSystem"`
-		SetTimezone         func() `in:"zone"`
-		AddUserTimezone     func() `in:"zone"`
-		DeleteUserTimezone  func() `in:"zone"`
-		GetZoneInfo         func() `in:"zone" out:"zone_info"`
-		GetZoneList         func() `out:"zone_list"`
+	// short date shows format
+	ShortDateFormat gsprop.Int `prop:"access:rw"`
+
+	// long date shows format
+	LongDateFormat gsprop.Int `prop:"access:rw"`
+
+	// short time shows format
+	ShortTimeFormat gsprop.Int `prop:"access:rw"`
+
+	// long time shows format
+	LongTimeFormat gsprop.Int `prop:"access:rw"`
+
+	WeekBegins gsprop.Int `prop:"access:rw"`
+
+	settings *gio.Settings
+	td       timedate1.Timedate
+	setter   timedated.Timedated
+	userObj  accounts.User
+
+	//nolint
+	signals *struct {
+		TimeUpdate struct {
+		}
 	}
 }
 
@@ -110,6 +127,13 @@ func NewManager(service *dbusutil.Service) (*Manager, error) {
 	m.Use24HourFormat.Bind(m.settings, settingsKey24Hour)
 	m.DSTOffset.Bind(m.settings, settingsKeyDSTOffset)
 	m.UserTimezones.Bind(m.settings, settingsKeyTimezoneList)
+
+	m.WeekdayFormat.Bind(m.settings, settingsKeyWeekdayFormat)
+	m.ShortDateFormat.Bind(m.settings, settingsKeyShortDateFormat)
+	m.LongDateFormat.Bind(m.settings, settingsKeyLongDateFormat)
+	m.ShortTimeFormat.Bind(m.settings, settingsKeyShortTimeFormat)
+	m.LongTimeFormat.Bind(m.settings, settingsKeyLongTimeFormat)
+	m.WeekBegins.Bind(m.settings, settingsKeyWeekBegins)
 
 	return m, nil
 }
@@ -147,7 +171,10 @@ func (m *Manager) init() {
 	if hasNil {
 		m.UserTimezones.Set(newList)
 	}
-	m.AddUserTimezone(m.Timezone)
+	err = m.AddUserTimezone(m.Timezone)
+	if err != nil {
+		logger.Warning("AddUserTimezone error:", err)
+	}
 
 	err = common.ActivateSysDaemonService(m.setter.ServiceName_())
 	if err != nil {
@@ -199,6 +226,42 @@ func (m *Manager) initUserObj(systemConn *dbus.Conn) {
 	// sync use 24 hour format
 	use24hourFormat := m.settings.GetBoolean(settingsKey24Hour)
 	err = m.userObj.SetUse24HourFormat(0, use24hourFormat)
+	if err != nil {
+		logger.Warning(err)
+	}
+
+	weekdayFormat := m.settings.GetInt(settingsKeyWeekdayFormat)
+	err = m.userObj.SetWeekdayFormat(0, weekdayFormat)
+	if err != nil {
+		logger.Warning(err)
+	}
+
+	shortDateFormat := m.settings.GetInt(settingsKeyShortDateFormat)
+	err = m.userObj.SetShortDateFormat(0, shortDateFormat)
+	if err != nil {
+		logger.Warning(err)
+	}
+
+	longDateFormat := m.settings.GetInt(settingsKeyLongDateFormat)
+	err = m.userObj.SetLongDateFormat(0, longDateFormat)
+	if err != nil {
+		logger.Warning(err)
+	}
+
+	shortTimeFormat := m.settings.GetInt(settingsKeyShortTimeFormat)
+	err = m.userObj.SetShortTimeFormat(0, shortTimeFormat)
+	if err != nil {
+		logger.Warning(err)
+	}
+
+	longTimeFormat := m.settings.GetInt(settingsKeyLongTimeFormat)
+	err = m.userObj.SetLongDateFormat(0, longTimeFormat)
+	if err != nil {
+		logger.Warning(err)
+	}
+
+	weekBegins := m.settings.GetInt(settingsKeyWeekBegins)
+	err = m.userObj.SetWeekBegins(0, weekBegins)
 	if err != nil {
 		logger.Warning(err)
 	}

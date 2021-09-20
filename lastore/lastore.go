@@ -6,17 +6,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.lastore"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.system.power"
+	"github.com/godbus/dbus"
+	lastore "github.com/linuxdeepin/go-dbus-factory/com.deepin.lastore"
+	power "github.com/linuxdeepin/go-dbus-factory/com.deepin.system.power"
 	ofdbus "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.dbus"
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.notifications"
-
+	notifications "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.notifications"
 	"pkg.deepin.io/dde/daemon/common/dsync"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/proxy"
 	"pkg.deepin.io/lib/gettext"
 )
+
+//go:generate dbusutil-gen em -type Lastore
 
 type Lastore struct {
 	service        *dbusutil.Service
@@ -26,10 +27,10 @@ type Lastore struct {
 	lang           string
 	inhibitFd      dbus.UnixFD
 
-	power         *power.Power
-	core          *lastore.Lastore
-	sysDBusDaemon *ofdbus.DBus
-	notifications *notifications.Notifications
+	power         power.Power
+	core          lastore.Lastore
+	sysDBusDaemon ofdbus.DBus
+	notifications notifications.Notifications
 
 	syncConfig *dsync.Config
 
@@ -41,11 +42,6 @@ type Lastore struct {
 	// prop:
 	PropsMu            sync.RWMutex
 	SourceCheckEnabled bool
-
-	methods *struct {
-		SetSourceCheckEnabled func() `in:"val"`
-		IsDiskSpaceSufficient func() `out:"result"`
-	}
 }
 
 type CacheJobInfo struct {
@@ -158,7 +154,7 @@ func (l *Lastore) initCore(systemBus *dbus.Conn) {
 	}
 
 	l.core.InitSignalExt(l.sysSigLoop, false)
-	err = l.core.JobList().ConnectChanged(func(hasValue bool, value []dbus.ObjectPath) {
+	err = l.core.Manager().JobList().ConnectChanged(func(hasValue bool, value []dbus.ObjectPath) {
 		if !hasValue {
 			return
 		}
@@ -181,7 +177,7 @@ func (l *Lastore) initCore(systemBus *dbus.Conn) {
 		}
 	})
 
-	jobList, err := l.core.JobList().Get(0)
+	jobList, err := l.core.Manager().JobList().Get(0)
 	if err != nil {
 		logger.Warning(err)
 	}
@@ -247,7 +243,7 @@ func (l *Lastore) createJobFailedActions(jobId string) []NotifyAction {
 			Id:   "retry",
 			Name: gettext.Tr("Retry"),
 			Callback: func() {
-				err := l.core.StartJob(dbus.FlagNoAutoStart, jobId)
+				err := l.core.Manager().StartJob(dbus.FlagNoAutoStart, jobId)
 				logger.Infof("StartJob %q : %v", jobId, err)
 			},
 		},
@@ -255,7 +251,7 @@ func (l *Lastore) createJobFailedActions(jobId string) []NotifyAction {
 			Id:   "cancel",
 			Name: gettext.Tr("Cancel"),
 			Callback: func() {
-				err := l.core.CleanJob(dbus.FlagNoAutoStart, jobId)
+				err := l.core.Manager().CleanJob(dbus.FlagNoAutoStart, jobId)
 				logger.Infof("CleanJob %q : %v", jobId, err)
 			},
 		},
@@ -288,6 +284,10 @@ func (l *Lastore) notifyJob(path dbus.ObjectPath) {
 	info := l.jobStatus[path]
 	status := info.Status
 	logger.Debugf("notifyJob: %q %q --> %v", path, status, info)
+	if info.Name == "uos-release-note" {
+		logger.Debug("do not notify when package name is uos-release-note")
+		return
+	}
 	switch guestJobTypeFromPath(path) {
 	case InstallJobType:
 		switch status {
@@ -311,8 +311,8 @@ func (l *Lastore) notifyJob(path dbus.ObjectPath) {
 			strings.Contains(info.Name, "+notify") {
 			l.notifyAutoClean()
 		}
-	case UpdateSourceJobType:
-		val, _ := l.core.UpdatablePackages().Get(0)
+	case UpdateSourceJobType, CustomUpdateJobType:
+		val, _ := l.core.Updater().UpdatablePackages().Get(0)
 		if status == SucceedStatus && len(val) > 0 &&
 			strings.Contains(info.Name, "+notify") {
 			l.notifyUpdateSource(l.createUpdateActions())
@@ -320,7 +320,7 @@ func (l *Lastore) notifyJob(path dbus.ObjectPath) {
 	}
 }
 
-func (*Lastore) IsDiskSpaceSufficient() (bool, *dbus.Error) {
+func (*Lastore) IsDiskSpaceSufficient() (result bool, busErr *dbus.Error) {
 	avail, err := queryVFSAvailable("/")
 	if err != nil {
 		return false, dbusutil.ToError(err)
@@ -405,7 +405,7 @@ func guestJobTypeFromPath(path dbus.ObjectPath) string {
 	for _, jobType := range []string{
 		// job types:
 		InstallJobType, DownloadJobType, RemoveJobType,
-		UpdateSourceJobType, DistUpgradeJobType, CleanJobType,
+		UpdateSourceJobType, DistUpgradeJobType, CleanJobType, CustomUpdateJobType,
 	} {
 		if strings.Contains(_path, jobType) {
 			return jobType

@@ -20,8 +20,10 @@
 package background
 
 import (
+	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 var (
@@ -33,11 +35,27 @@ var (
 // ListDirs list all background dirs
 func ListDirs() []string {
 	var result []string
-	for _, value := range systemWallpapersDir {
-		result = append(result, value)
-	}
+	result = append(result, systemWallpapersDir...)
 	result = append(result, CustomWallpapersConfigDir)
 	return result
+}
+
+// 根据时间排序文件
+func sortByTime(fileInfoList []os.FileInfo) []os.FileInfo {
+	sort.Slice(fileInfoList, func(i, j int) bool {
+		fileInfoI := fileInfoList[i]
+		fileInfoJ := fileInfoList[j]
+		if fileInfoI.ModTime().After(fileInfoJ.ModTime()) {
+			return true
+		} else if fileInfoI.ModTime().Equal(fileInfoJ.ModTime()) {
+			if fileInfoI.Name() < fileInfoJ.Name() {
+				return true
+			}
+		}
+		return false
+	})
+
+	return fileInfoList
 }
 
 func getSysBgFiles() []string {
@@ -49,7 +67,32 @@ func getSysBgFiles() []string {
 }
 
 func getCustomBgFiles() []string {
-	return getBgFilesInDir(CustomWallpapersConfigDir)
+	return getCustomBgFilesInDir(CustomWallpapersConfigDir)
+}
+
+func getCustomBgFilesInDir(dir string) []string {
+	fileInfoList, err := ioutil.ReadDir(dir)
+	if err != nil {
+		logger.Warning(err)
+		return nil
+	}
+
+	sortByTime(fileInfoList)
+
+	var wallpapers []string
+	for _, info := range fileInfoList {
+		// 只处理custom-wallpapers目录下的壁纸图片文件
+		if info.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, info.Name())
+		if !IsBackgroundFile(path) {
+			continue
+		}
+		wallpapers = append(wallpapers, path)
+	}
+
+	return wallpapers
 }
 
 func getBgFilesInDir(dir string) []string {

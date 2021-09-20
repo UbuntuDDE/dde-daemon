@@ -20,11 +20,17 @@
 package systeminfo
 
 import (
+	"sync"
 	"time"
 
+	"github.com/godbus/dbus"
+	systeminfo "github.com/linuxdeepin/go-dbus-factory/com.deepin.system.systeminfo"
 	"pkg.deepin.io/dde/daemon/loader"
+	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/log"
 )
+
+//go:generate dbusutil-gen em -type SystemInfo
 
 const (
 	dbusServiceName = "com.deepin.daemon.SystemInfo"
@@ -51,10 +57,15 @@ type SystemInfo struct {
 	SystemType int64
 	// CPU max MHz
 	CPUMaxMHz float64
+	//Current Speed : when cpu max mhz is 0 use
+	CurrentSpeed uint64
 }
 
 type Daemon struct {
-	info *SystemInfo
+	info          *SystemInfo
+	PropsMu       sync.RWMutex
+	systeminfo    systeminfo.SystemInfo
+	sigSystemLoop *dbusutil.SignalLoop
 	*loader.ModuleBase
 }
 
@@ -77,7 +88,7 @@ func (d *Daemon) Start() error {
 	service := loader.GetService()
 
 	d.info = NewSystemInfo()
-
+	d.initSysSystemInfo()
 	err := service.Export(dbusPath, d.info)
 	if err != nil {
 		d.info = nil
@@ -100,10 +111,51 @@ func (d *Daemon) Stop() error {
 	}
 
 	service := loader.GetService()
-	service.StopExport(d.info)
+	_ = service.StopExport(d.info)
 	d.info = nil
 
 	return nil
+}
+
+func (d *Daemon) initSysSystemInfo() {
+	sysBus, err := dbus.SystemBus()
+	if err != nil {
+		return
+	}
+	d.systeminfo = systeminfo.NewSystemInfo(sysBus)
+	d.sigSystemLoop = dbusutil.NewSignalLoop(sysBus, 10)
+	d.sigSystemLoop.Start()
+	d.systeminfo.InitSignalExt(d.sigSystemLoop, true)
+
+	// 通过 demicode 获取 "CPU 频率", 接收 com.deepin.daemon.SystemInfo 的属性 CurrentSpeed 改变信号
+	err = d.systeminfo.CurrentSpeed().ConnectChanged(func(hasValue bool, value uint64) {
+		logger.Infof("demicode hasValue : %t, CurrentSpeed : %d", hasValue, value)
+		if !hasValue {
+			return
+		}
+		d.PropsMu.Lock()
+		d.info.CurrentSpeed = value
+		//假如此时 cpu max mhz 还是0, 且 value 不是0, 则给 d.infoCPUMaxMHz 再赋值
+		if isFloatEqual(d.info.CPUMaxMHz, 0.0) && value != 0 {
+			d.info.CPUMaxMHz = float64(value)
+		}
+		d.PropsMu.Unlock()
+	})
+
+	if err != nil {
+		logger.Warning("systeminfo.CurrentSpeed().ConnectChanged err : ", err)
+	}
+
+	d.PropsMu.Lock()
+	d.info.CurrentSpeed, err = d.systeminfo.CurrentSpeed().Get(0)
+	if err != nil {
+		logger.Warning("get systeminfo.CurrentSpeed err : ", err)
+		d.PropsMu.Unlock()
+		return
+	}
+	d.info.CPUMaxMHz = float64(d.info.CurrentSpeed)
+	d.PropsMu.Unlock()
+	logger.Info("d.info.CurrentSpeed : ", d.info.CurrentSpeed, " , d.info.CPUMaxMHz : ", d.info.CPUMaxMHz)
 }
 
 func NewSystemInfo() *SystemInfo {
@@ -113,13 +165,15 @@ func NewSystemInfo() *SystemInfo {
 		info = *tmp
 		time.AfterFunc(time.Second*10, func() {
 			info.init()
-			doSaveCache(&info, cacheFile)
+			_ = doSaveCache(&info, cacheFile)
 		})
 		return &info
 	}
 
 	info.init()
-	go doSaveCache(&info, cacheFile)
+	go func() {
+		_ = doSaveCache(&info, cacheFile)
+	}()
 	return &info
 }
 
@@ -160,17 +214,24 @@ func (info *SystemInfo) init() {
 	if err != nil {
 		logger.Warning("run lscpu failed:", err)
 		return
-	}
-
-	info.CPUMaxMHz, err = getCPUMaxMHzByLscpu(lscpuRes)
-	if err != nil {
-		logger.Warning(err)
-	}
-
-	if info.Processor == "" {
-		info.Processor, err = getProcessorByLscpu(lscpuRes)
+	} else {
+		info.CPUMaxMHz, err = getCPUMaxMHzByLscpu(lscpuRes)
 		if err != nil {
 			logger.Warning(err)
+		}
+
+		info.Processor, err = getProcessorByLscpu(lscpuRes)
+		if err != nil {
+			logger.Warning("get CPU Max MHz failed:", err)
+			return
+		} else {
+			if isFloatEqual(info.CPUMaxMHz, 0.0) {
+				//关联信号,接收system的信号 : line139
+				//此时若info.CurrentSpeed不为0, 则可以直接使用备用的currentspeed赋值
+				if info.CurrentSpeed != 0 {
+					info.CPUMaxMHz = float64(info.CurrentSpeed)
+				}
+			}
 		}
 	}
 }

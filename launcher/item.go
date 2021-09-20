@@ -22,8 +22,9 @@ package launcher
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
-	"github.com/mozillazg/go-pinyin"
+	"github.com/Lofanmi/pinyin-golang/pinyin"
 	"pkg.deepin.io/lib/appinfo/desktopappinfo"
 )
 
@@ -118,43 +119,60 @@ const (
 	genericNameScore = 70
 	keywordScore     = 60
 	categoryScore    = 60
-	commentScore     = 50
 )
 
-var pinyinArgs = pinyin.NewArgs()
-
-func init() {
-	pinyinArgs.Heteronym = true
-	pinyinArgs.Fallback = func(r rune, a pinyin.Args) []string {
-		return []string{string(r)}
-	}
+func isHans(data rune) bool {
+	return unicode.Is(unicode.Han, data)
 }
 
-func toPinyin(str string) string {
-	pySliceSlice := pinyin.Pinyin(str, pinyinArgs)
-	items := make([]string, len(pySliceSlice))
-	for idx, pySlice := range pySliceSlice {
-		items[idx] = strings.Join(pySlice, "")
+func hansToPinyinAndAbbr(hans string) (string, string) {
+	dict := pinyin.NewDict()
+	pyTmp := dict.Sentence(hans).None()
+	abbrTmp := dict.Abbr(hans, "")
+	return pyTmp, abbrTmp
+}
+
+//获取拼音和拼音简拼,如Qt 5 设计器 -> Qt5shejiqi, Qt5sjq
+//当字符中有字母和数字以及汉字时，只转换汉字部分，其他部分不转换
+func toPinyinAndAbbr(str string) (string, string) {
+	var hans strings.Builder
+	var haveHans bool
+	var pinYin strings.Builder
+	var abbr strings.Builder
+	for _, v := range str {
+		if isHans(v) {
+			hans.WriteRune(v)
+			haveHans = true
+		} else {
+			if haveHans {
+				pyTmp, abbrTmp := hansToPinyinAndAbbr(hans.String())
+				pinYin.WriteString(pyTmp)
+				abbr.WriteString(abbrTmp)
+				haveHans = false
+				hans.Reset()
+			}
+			pinYin.WriteRune(v)
+			abbr.WriteRune(v)
+		}
 	}
-	return strings.Join(items, "")
+	if haveHans {
+		pyTmp, abbrTmp := hansToPinyinAndAbbr(hans.String())
+		pinYin.WriteString(pyTmp)
+		abbr.WriteString(abbrTmp)
+	}
+
+	return strings.Replace(pinYin.String(), " ", "", -1), strings.Replace(abbr.String(), " ", "", -1)
+
 }
 
 func (item *Item) setSearchTargets(pinyinEnabled bool) {
-	item.addSearchTarget(idScore, item.ID)
 	item.addSearchTarget(nameScore, item.Name)
 	item.addSearchTarget(nameScore, item.enName)
-	item.addSearchTarget(genericNameScore, item.genericName)
-	for _, c := range item.categories {
-		item.addSearchTarget(categoryScore, c)
-	}
-	if pinyinEnabled {
-		namePy := toPinyin(item.Name)
-		item.addSearchTarget(nameScore, namePy)
-	}
 
-	// add keywords
-	for _, kw := range item.keywords {
-		item.addSearchTarget(keywordScore, kw)
+	if pinyinEnabled {
+		pinyin, abbr := toPinyinAndAbbr(item.Name)
+		item.addSearchTarget(nameScore, pinyin)
+		item.addSearchTarget(nameScore, abbr)
 	}
 }
 
@@ -162,9 +180,19 @@ func (item *Item) addSearchTarget(score SearchScore, str string) {
 	if str == "" {
 		return
 	}
+	str = strings.Replace(str, " ", "", -1)
 	str = strings.ToLower(str)
 	scoreInDict, ok := item.searchTargets[str]
 	if !ok || (ok && scoreInDict < score) {
 		item.searchTargets[str] = score
 	}
+}
+
+func (item *Item) deleteSearchTarget(str string) {
+	if str == "" {
+		return
+	}
+	str = strings.Replace(str, " ", "", -1)
+	str = strings.ToLower(str)
+	delete(item.searchTargets, str)
 }

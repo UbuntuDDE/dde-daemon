@@ -3,7 +3,6 @@ package calendar
 import (
 	"os"
 	"path/filepath"
-	"time"
 
 	"pkg.deepin.io/lib/xdg/basedir"
 
@@ -18,7 +17,7 @@ var logger = log.NewLogger("daemon/calendar")
 var dbFile = filepath.Join(basedir.GetUserConfigDir(), "deepin/dde-daemon/calendar/scheduler.db")
 
 func init() {
-	loader.Register(newModule())
+	//loader.Register(newModule())
 }
 
 type Module struct {
@@ -34,15 +33,7 @@ func (m *Module) Start() error {
 	if m.scheduler != nil {
 		return nil
 	}
-	go func() {
-		t0 := time.Now()
-		err := m.start()
-		if err != nil {
-			logger.Warning("failed to start calendar module:", err)
-		}
-		logger.Info("start calendar module cost", time.Since(t0))
-	}()
-	return nil
+	return m.start()
 }
 
 func (m *Module) Stop() error {

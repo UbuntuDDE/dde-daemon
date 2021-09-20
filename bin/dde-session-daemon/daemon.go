@@ -23,22 +23,23 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sync"
 
+	"github.com/godbus/dbus"
 	"pkg.deepin.io/dde/api/session"
 	"pkg.deepin.io/dde/daemon/calltrace"
 	"pkg.deepin.io/dde/daemon/loader"
 	"pkg.deepin.io/gir/gio-2.0"
 	"pkg.deepin.io/gir/glib-2.0"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/gsettings"
 	"pkg.deepin.io/lib/log"
 )
 
+//go:generate dbusutil-gen em -type SessionDaemon
+
 const (
-	ProfTypeCPU = "cpu"
-	ProfTypeMem = "memory"
+	ProfTypeCPU = "cpu"    //nolint
+	ProfTypeMem = "memory" //nolint
 
 	dbusPath        = "/com/deepin/daemon/Daemon"
 	dbusServiceName = "com.deepin.daemon.Daemon"
@@ -61,11 +62,11 @@ func runMainLoop() {
 func getEnableFlag(flag *Flags) loader.EnableFlag {
 	enableFlag := loader.EnableFlagIgnoreMissingModule
 
-	if *flag.IgnoreMissingModules {
+	if flag.IgnoreMissingModules {
 		enableFlag = loader.EnableFlagNone
 	}
 
-	if *flag.ForceStart {
+	if flag.ForceStart {
 		enableFlag |= loader.EnableFlagForceStart
 	}
 
@@ -80,29 +81,25 @@ type SessionDaemon struct {
 	part1DisabledModules []string
 	part2EnabledModules  []string
 	part2DisabledModules []string
-
-	cpuLocker sync.Mutex
-	cpuWriter *os.File
-
-	methods *struct {
-		CallTrace func() `in:"times,seconds"`
-	}
 }
 
 func (*SessionDaemon) GetInterfaceName() string {
 	return dbusInterface
 }
 
-func NewSessionDaemon(flags *Flags, settings *gio.Settings, logger *log.Logger) *SessionDaemon {
-	session := &SessionDaemon{
-		flags:    flags,
+func NewSessionDaemon(settings *gio.Settings, logger *log.Logger) *SessionDaemon {
+	daemon := &SessionDaemon{
+		flags: &Flags{
+			IgnoreMissingModules: _options.ignore,
+			ForceStart:           _options.force,
+		},
 		settings: settings,
 		log:      logger,
 	}
 
-	session.initModules()
+	daemon.initModules()
 
-	return session
+	return daemon
 }
 
 func (s *SessionDaemon) register(service *dbusutil.Service) error {
@@ -122,17 +119,18 @@ func (s *SessionDaemon) initModules() {
 	part1ModuleNames := []string{
 		"dock",
 		"trayicon",
+		"launcher",
 		"x-event-monitor",
 	}
 
 	part2ModuleNames := []string{
 		"network",
 		"audio",
-		"launcher",
 		"appearance",
 		"screensaver",
 		"sessionwatcher",
 		"power", // need screensaver and sessionwatcher
+		"uadpagent",
 		"service-trigger",
 		"clipboard",
 		"keybinding",
@@ -143,7 +141,7 @@ func (s *SessionDaemon) initModules() {
 		"bluetooth",
 		"screenedge",
 		"mime",
-		"calendar",
+		//"calendar",
 		"miracast", // need network
 		"systeminfo",
 		"lastore",
@@ -226,7 +224,7 @@ func (s *SessionDaemon) disableModules(disableModules []string) error {
 }
 
 func (s *SessionDaemon) listModule(name string) error {
-	if name == "" {
+	if name == "all" {
 		for _, module := range loader.List() {
 			fmt.Println(module.Name())
 		}
@@ -238,10 +236,7 @@ func (s *SessionDaemon) listModule(name string) error {
 		return fmt.Errorf("no such a module named %s", name)
 	}
 
-	for _, m := range module.GetDependencies() {
-		fmt.Println(m)
-	}
-
+	fmt.Printf("module %v dependencies: %v\n", name, module.GetDependencies())
 	return nil
 }
 

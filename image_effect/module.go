@@ -10,15 +10,15 @@ func init() {
 }
 
 type Module struct {
-	ie *ImageEffect
 	*loader.ModuleBase
+	ie *ImageEffect
 }
 
-func (m Module) GetDependencies() []string {
+func (m *Module) GetDependencies() []string {
 	return nil
 }
 
-func (m Module) Start() error {
+func (m *Module) Start() error {
 	if m.ie != nil {
 		return nil
 	}
@@ -32,7 +32,7 @@ func (m Module) Start() error {
 	return nil
 }
 
-func (m Module) Stop() error {
+func (m *Module) Stop() error {
 	// TODO
 	return nil
 }

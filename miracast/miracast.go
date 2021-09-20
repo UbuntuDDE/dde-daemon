@@ -25,16 +25,17 @@ import (
 	"sync"
 	"time"
 
-	"pkg.deepin.io/lib/dbusutil/proxy"
-
+	"github.com/godbus/dbus"
 	ofdbus "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.dbus"
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.miracle.wfd"
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.miracle.wifi"
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.networkmanager"
+	wfd "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.miracle.wfd"
+	wifi "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.miracle.wifi"
+	networkmanager "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.networkmanager"
 	"pkg.deepin.io/dde/daemon/iw"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
+	"pkg.deepin.io/lib/dbusutil/proxy"
 )
+
+//go:generate dbusutil-gen em -type Miracast
 
 const (
 	dbusServiceName = "com.deepin.daemon.Miracast"
@@ -56,10 +57,10 @@ const (
 
 type Miracast struct {
 	sysSigLoop *dbusutil.SignalLoop
-	wifiObj    *wifi.Wifi
-	wfdObj     *wfd.Wfd
-	network    *networkmanager.Manager
-	sysBusObj  *ofdbus.DBus
+	wifiObj    wifi.Wifi
+	wfdObj     wfd.Wfd
+	network    networkmanager.Manager
+	sysBusObj  ofdbus.DBus
 
 	links      LinkInfos
 	linkLocker sync.Mutex
@@ -74,6 +75,7 @@ type Miracast struct {
 	locker sync.Mutex
 
 	service *dbusutil.Service
+	//nolint
 	signals *struct {
 		Added, Removed struct {
 			path       dbus.ObjectPath
@@ -83,16 +85,6 @@ type Miracast struct {
 			eventType uint8
 			path      dbus.ObjectPath
 		}
-	}
-
-	methods *struct {
-		ListLinks   func() `out:"links"`
-		ListSinks   func() `out:"sinks"`
-		Enable      func() `in:"link,enabled"`
-		SetLinkName func() `in:"link,name"`
-		Scanning    func() `in:"link,enabled"`
-		Connect     func() `in:"sink,x,y,w,h"`
-		Disconnect  func() `in:"sink"`
 	}
 }
 
@@ -147,7 +139,7 @@ func (m *Miracast) init() {
 			logger.Warning("failed to add path:", objPath, err)
 		}
 	}
-	objs, err = m.wfdObj.GetManagedObjects(0)
+	objs, err = m.wfdObj.ObjectManager().GetManagedObjects(0)
 	if err != nil {
 		logger.Error("failed to get wfd objects:", err)
 	}
@@ -196,7 +188,7 @@ func (m *Miracast) addObject(objPath dbus.ObjectPath) (interface{}, error) {
 	} else {
 		logger.Debug("add", objPath)
 	}
-	return nil, fmt.Errorf("unknow object objPath: %v", objPath)
+	return nil, fmt.Errorf("unknown object objPath: %v", objPath)
 }
 
 func (m *Miracast) addLinkInfo(objPath dbus.ObjectPath) (*LinkInfo, error) {
@@ -359,7 +351,7 @@ func (m *Miracast) handleEvent() {
 		logger.Warning(err)
 	}
 	m.wfdObj.InitSignalExt(m.sysSigLoop, true)
-	_, err = m.wfdObj.ConnectInterfacesAdded(func(objectPath dbus.ObjectPath,
+	_, err = m.wfdObj.ObjectManager().ConnectInterfacesAdded(func(objectPath dbus.ObjectPath,
 		interfacesAndProperties map[string]map[string]dbus.Variant) {
 		v, err := m.addObject(objectPath)
 		if err == nil {
@@ -369,7 +361,7 @@ func (m *Miracast) handleEvent() {
 	if err != nil {
 		logger.Warning(err)
 	}
-	_, err = m.wfdObj.ConnectInterfacesRemoved(func(objectPath dbus.ObjectPath, interfaces []string) {
+	_, err = m.wfdObj.ObjectManager().ConnectInterfacesRemoved(func(objectPath dbus.ObjectPath, interfaces []string) {
 		if ok, v := m.removeObject(objectPath); ok {
 			m.emitSignalRemoved(dbus.ObjectPath(objectPath), toJSON(v))
 		}
@@ -435,8 +427,8 @@ func (m *Miracast) enableWirelessManaged(interfaceName string, enabled bool) err
 	const nmDeviceTypeWifi = 2
 
 	for _, devPath := range devPaths {
-		d, err := networkmanager.NewDevice(sysBus, devPath)
-		devType, err := d.DeviceType().Get(0)
+		d, _ := networkmanager.NewDevice(sysBus, devPath)
+		devType, err := d.Device().DeviceType().Get(0)
 		if err != nil {
 			logger.Warning(err)
 			continue
@@ -446,7 +438,7 @@ func (m *Miracast) enableWirelessManaged(interfaceName string, enabled bool) err
 			continue
 		}
 
-		ifcName, err := d.Interface().Get(0)
+		ifcName, err := d.Device().Interface().Get(0)
 		if err != nil {
 			logger.Warning(err)
 			continue
@@ -455,13 +447,13 @@ func (m *Miracast) enableWirelessManaged(interfaceName string, enabled bool) err
 			continue
 		}
 
-		managed, err := d.Managed().Get(0)
+		managed, err := d.Device().Managed().Get(0)
 		if err != nil {
 			return err
 		}
 
 		if managed != enabled {
-			err = d.Managed().Set(0, enabled)
+			err = d.Device().Managed().Set(0, enabled)
 			if err != nil {
 				return err
 			}
@@ -476,10 +468,10 @@ func (m *Miracast) enableWirelessManaged(interfaceName string, enabled bool) err
 	return nil
 }
 
-func waitNmDeviceManaged(device *networkmanager.Device, wantManged bool) error {
+func waitNmDeviceManaged(device networkmanager.Device, wantManged bool) error {
 	name := fmt.Sprintf("device %s manged", device.Path_())
 	return waitChange(name, wantManged, func() (b bool, err error) {
-		return device.Managed().Get(0)
+		return device.Device().Managed().Get(0)
 	})
 }
 

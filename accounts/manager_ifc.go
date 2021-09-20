@@ -23,11 +23,12 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"time"
 
+	dbus "github.com/godbus/dbus"
 	"pkg.deepin.io/dde/daemon/accounts/checkers"
 	"pkg.deepin.io/dde/daemon/accounts/users"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/gettext"
 	"pkg.deepin.io/lib/procfs"
@@ -56,7 +57,7 @@ func (*Manager) GetInterfaceName() string {
 // ty: 用户类型，0 为普通用户，1 为管理员
 
 func (m *Manager) CreateUser(sender dbus.Sender,
-	name, fullName string, accountType int32) (dbus.ObjectPath, *dbus.Error) {
+	name, fullName string, accountType int32) (userPath dbus.ObjectPath, busErr *dbus.Error) {
 
 	logger.Debug("[CreateUser] new user:", name, fullName, accountType)
 
@@ -137,6 +138,35 @@ func (m *Manager) DeleteUser(sender dbus.Sender,
 		return dbusutil.ToError(err)
 	}
 
+	if m.isUdcpUserID(user.Uid) {
+		id, _ := strconv.Atoi(user.Uid)
+		result, err := m.udcpCache.RemoveCacheFile(0, uint32(id))
+		if err != nil {
+			logger.Errorf("Udcp cache RemoveCacheFile failed: %v", err)
+			return dbusutil.ToError(err)
+		}
+
+		if !result {
+			return dbusutil.ToError(errors.New("failed to remove user cache files"))
+		}
+
+		// 删除服务，更新UserList
+		userPath := userDBusPathPrefix + user.Uid
+		m.stopExportUser(userPath)
+		m.updatePropUserList()
+
+		// 清楚域账户本地缓存
+		if rmFiles {
+			user.clearData()
+		}
+
+		err = m.service.Emit(m, "UserDeleted", userPath)
+		if err != nil {
+			logger.Warning(err)
+		}
+		return dbusutil.ToError(err)
+	}
+
 	if err := users.DeleteUser(rmFiles, name); err != nil {
 		logger.Warningf("DoAction: delete user '%s' failed: %v\n",
 			name, err)
@@ -144,7 +174,7 @@ func (m *Manager) DeleteUser(sender dbus.Sender,
 	}
 
 	if users.IsAutoLoginUser(name) {
-		users.SetAutoLoginUser("", "")
+		_ = users.SetAutoLoginUser("", "")
 	}
 
 	//delete user config and icons
@@ -154,7 +184,7 @@ func (m *Manager) DeleteUser(sender dbus.Sender,
 	return nil
 }
 
-func (m *Manager) FindUserById(uid string) (string, *dbus.Error) {
+func (m *Manager) FindUserById(uid string) (user string, busErr *dbus.Error) {
 	userPath := userDBusPathPrefix + uid
 	for _, v := range m.UserList {
 		if v == userPath {
@@ -165,7 +195,7 @@ func (m *Manager) FindUserById(uid string) (string, *dbus.Error) {
 	return "", dbusutil.ToError(fmt.Errorf("Invalid uid: %s", uid))
 }
 
-func (m *Manager) FindUserByName(name string) (string, *dbus.Error) {
+func (m *Manager) FindUserByName(name string) (user string, busErr *dbus.Error) {
 	m.usersMapMu.Lock()
 	defer m.usersMapMu.Unlock()
 
@@ -181,7 +211,7 @@ func (m *Manager) FindUserByName(name string) (string, *dbus.Error) {
 // 随机得到一个用户头像
 //
 // ret0：头像路径，为空则表示获取失败
-func (m *Manager) RandUserIcon() (string, *dbus.Error) {
+func (m *Manager) RandUserIcon() (iconFile string, busErr *dbus.Error) {
 	icons := getUserStandardIcons()
 	if len(icons) == 0 {
 		return "", dbusutil.ToError(errors.New("Did not find any user icons"))
@@ -243,7 +273,7 @@ func (m *Manager) IsUsernameValid(sender dbus.Sender, name string) (valid bool,
 // ret1: 提示信息
 //
 // ret2: 不合法代码
-func (m *Manager) IsPasswordValid(password string) (bool, string, int32, *dbus.Error) {
+func (m *Manager) IsPasswordValid(password string) (valid bool, msg string, code int32, busErr *dbus.Error) {
 	releaseType := getDeepinReleaseType()
 	logger.Infof("release type %q", releaseType)
 	errCode := checkers.CheckPasswordValid(releaseType, password)
@@ -270,11 +300,11 @@ func (m *Manager) AllowGuestAccount(sender dbus.Sender, allow bool) *dbus.Error 
 	}
 
 	m.AllowGuest = allow
-	m.emitPropChangedAllowGuest(allow)
+	_ = m.emitPropChangedAllowGuest(allow)
 	return nil
 }
 
-func (m *Manager) CreateGuestAccount(sender dbus.Sender) (string, *dbus.Error) {
+func (m *Manager) CreateGuestAccount(sender dbus.Sender) (user string, busErr *dbus.Error) {
 	err := m.checkAuth(sender)
 	if err != nil {
 		return "", dbusutil.ToError(err)
@@ -293,17 +323,38 @@ func (m *Manager) CreateGuestAccount(sender dbus.Sender) (string, *dbus.Error) {
 	return userDBusPathPrefix + info.Uid, nil
 }
 
-func (m *Manager) GetGroups() ([]string, *dbus.Error) {
+func (m *Manager) GetGroups() (groups []string, busErr *dbus.Error) {
 	groups, err := users.GetAllGroups()
 	return groups, dbusutil.ToError(err)
 }
 
-func (m *Manager) GetPresetGroups(accountType int32) ([]string, *dbus.Error) {
+func (m *Manager) GetPresetGroups(accountType int32) (groups []string, busErr *dbus.Error) {
 	err := checkAccountType(int(accountType))
 	if err != nil {
 		return nil, dbusutil.ToError(err)
 	}
 
-	groups := users.GetPresetGroups(int(accountType))
+	groups = users.GetPresetGroups(int(accountType))
 	return groups, nil
+}
+
+// 是否使能accounts服务在监听到/etc/passwd文件变化后,执行对应的属性更新和服务导出,只允许root用户操作该接口
+func (m *Manager) EnablePasswdChangedHandler(sender dbus.Sender, enable bool) *dbus.Error {
+	uid, err := m.service.GetConnUID(string(sender))
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+	if uid != 0 {
+		return dbusutil.ToError(fmt.Errorf("not allow %v call this method", sender))
+	}
+	m.enablePasswdChangedHandlerMu.Lock()
+	defer m.enablePasswdChangedHandlerMu.Unlock()
+	if m.enablePasswdChangedHandler == enable {
+		return nil
+	}
+	m.enablePasswdChangedHandler = enable
+	if enable {
+		m.handleFilePasswdChanged()
+	}
+	return nil
 }
