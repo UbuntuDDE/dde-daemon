@@ -1,3 +1,9 @@
+dde-daemon (5.13.49-1) impish; urgency=medium
+
+  * New upstream release.
+
+ -- Arun Kumar Pariyar <openarungeek@gmail.com>  Mon, 20 Sep 2021 13:16:18 +0545
+
 dde-daemon (5.11.0.18-1) groovy; urgency=medium
 
   * Initial release.

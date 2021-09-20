@@ -1,9 +1,10 @@
 Source: dde-daemon
 Section: devel
 Priority: extra
-Maintainer: Deepin Packages Builder <packages@deepin.com>
+Maintainer: Arun Kumar Pariyar <openarungeek@gmail.com>
+XSBC-Original-Maintainer: Deepin Packages Builder <packages@deepin.com>
 Build-Depends:
- dde-api-dev (>> 3.17.1+),
+ dde-api-dev (>= 5.4.11~),
  debhelper-compat (=13),
  deepin-desktop-schemas,
  deepin-gettext-tools,
@@ -52,7 +53,7 @@ Build-Depends:
  libxkbfile-dev,
  libxtst-dev,
  python3,
-Standards-Version: 3.9.8
+Standards-Version: 4.5.1
 Homepage: http://www.deepin.org
 
 Package: dde-daemon
@@ -101,7 +102,6 @@ Conflicts:
 Provides:
  lastore-daemon-migration,
 Recommends:
- flatpak,
  iio-sensor-proxy,
  laptop-mode-tools,
  proxychains4,
