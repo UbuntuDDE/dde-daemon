@@ -20,17 +20,15 @@
 package grub2
 
 import (
-	"crypto/md5"
 	"errors"
-	"fmt"
-	"io"
+	"io/ioutil"
 	"os"
 	"strconv"
+	"strings"
 
-	"pkg.deepin.io/dde/daemon/grub_common"
-
+	"github.com/godbus/dbus"
 	polkit "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.policykit1"
-	"pkg.deepin.io/lib/dbus1"
+	"pkg.deepin.io/dde/daemon/grub_common"
 )
 
 func quoteString(str string) string {
@@ -83,23 +81,73 @@ func checkAuth(sysBusName, actionId string) (bool, error) {
 
 var errAuthFailed = errors.New("authentication failed")
 
-func getBytesMD5Sum(b []byte) string {
-	return fmt.Sprintf("%x", md5.Sum(b))
+const (
+	systemLocaleFile  = "/etc/default/locale"
+	systemdLocaleFile = "/etc/locale.conf"
+)
+
+func getSystemLocale() (locale string) {
+	files := []string{
+		systemLocaleFile,
+		systemdLocaleFile, // It is used by systemd to store system-wide locale settings
+	}
+
+	for _, file := range files {
+		locale, _ = getLocaleFromFile(file)
+		if locale != "" {
+			// get locale success
+			break
+		}
+	}
+	return
 }
 
-func getFileMD5sum(file string) (string, error) {
-	f, err := os.Open(file)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := md5.New()
-	_, err = io.Copy(h, f)
+func getLocaleFromFile(filename string) (string, error) {
+	// TODO: 重构代码，代码复制自 langselector 模块
+	infos, err := readEnvFile(filename)
 	if err != nil {
 		return "", err
 	}
 
-	sum := fmt.Sprintf("%x", h.Sum(nil))
-	return sum, nil
+	var locale string
+	for _, info := range infos {
+		if info.key != "LANG" {
+			continue
+		}
+		locale = info.value
+	}
+
+	locale = strings.Trim(locale, " '\"")
+	return locale, nil
+}
+
+type envInfo struct {
+	key   string
+	value string
+}
+type envInfos []envInfo
+
+func readEnvFile(file string) (envInfos, error) {
+	content, err := ioutil.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		infos envInfos
+		lines = strings.Split(string(content), "\n")
+	)
+	for _, line := range lines {
+		var array = strings.Split(line, "=")
+		if len(array) != 2 {
+			continue
+		}
+
+		infos = append(infos, envInfo{
+			key:   array[0],
+			value: array[1],
+		})
+	}
+
+	return infos, nil
 }

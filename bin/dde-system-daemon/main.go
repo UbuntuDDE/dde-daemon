@@ -29,12 +29,18 @@ import (
 	_ "pkg.deepin.io/dde/daemon/image_effect"
 	_ "pkg.deepin.io/dde/daemon/system/airplane_mode"
 	_ "pkg.deepin.io/dde/daemon/system/gesture"
+	_ "pkg.deepin.io/dde/daemon/system/inputdevices"
+	_ "pkg.deepin.io/dde/daemon/system/keyevent"
+	_ "pkg.deepin.io/dde/daemon/system/lang"
 	_ "pkg.deepin.io/dde/daemon/system/network"
 	_ "pkg.deepin.io/dde/daemon/system/power"
+	_ "pkg.deepin.io/dde/daemon/system/power_manager"
 	_ "pkg.deepin.io/dde/daemon/system/swapsched"
 	_ "pkg.deepin.io/dde/daemon/system/systeminfo"
 	_ "pkg.deepin.io/dde/daemon/system/timedated"
+	_ "pkg.deepin.io/dde/daemon/system/uadp"
 
+	login1 "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.login1"
 	"pkg.deepin.io/dde/daemon/loader"
 	"pkg.deepin.io/gir/glib-2.0"
 	"pkg.deepin.io/lib/dbusutil"
@@ -43,13 +49,27 @@ import (
 	"pkg.deepin.io/lib/log"
 )
 
+//go:generate dbusutil-gen em -type Daemon
+
 type Daemon struct {
-	methods *struct {
+	loginManager  login1.Manager
+	systemSigLoop *dbusutil.SignalLoop
+	service       *dbusutil.Service
+	methods       *struct { //nolint
 		ScalePlymouth                  func() `in:"scale"`
 		SetLongPressDuration           func() `in:"duration"`
 		NetworkGetConnections          func() `out:"data"`
 		NetworkSetConnections          func() `in:"data"`
 		BluetoothGetDeviceTechnologies func() `in:"adapter,device" out:"technologies"`
+		ClearTtys                      func()
+		ClearTty                       func() `in:"number"`
+		IsPidVirtualMachine            func() `in:"pid" out:"ret"`
+		IsIgnoreCheckVirtual           func() `in:"pid" out:"ret"`
+	}
+	signals *struct { //nolint
+		HandleForSleep struct {
+			start bool
+		}
 	}
 }
 
@@ -86,12 +106,17 @@ func main() {
 		}
 	}
 
+	// 系统级服务，无需设置LANG和LANGUAGE，保证翻译不受到影响
+	_ = os.Setenv("LANG", "")
+	_ = os.Setenv("LANGUAGE", "")
+
 	InitI18n()
 	Textdomain("dde-daemon")
 
 	logger.SetRestartCommand("/usr/lib/deepin-daemon/dde-system-daemon")
 
 	_daemon = &Daemon{}
+	_daemon.service = service
 	err = service.Export(dbusPath, _daemon)
 	if err != nil {
 		logger.Fatal("failed to export:", err)
@@ -111,6 +136,10 @@ func main() {
 	go glib.StartLoop()
 
 	fixDeepinInstallConfig()
+	err = _daemon.forwardPrepareForSleepSignal(service)
+	if err != nil {
+		logger.Warning(err)
+	}
 	service.Wait()
 }
 

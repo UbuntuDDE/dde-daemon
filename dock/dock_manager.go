@@ -26,20 +26,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/godbus/dbus"
 	libApps "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.apps"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.dde.daemon.launcher"
+	launcher "github.com/linuxdeepin/go-dbus-factory/com.deepin.dde.daemon.launcher"
 	libDDELauncher "github.com/linuxdeepin/go-dbus-factory/com.deepin.dde.launcher"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.sessionmanager"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.wm"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.wmswitcher"
-	"github.com/linuxdeepin/go-x11-client"
+	sessionmanager "github.com/linuxdeepin/go-dbus-factory/com.deepin.sessionmanager"
+	wm "github.com/linuxdeepin/go-dbus-factory/com.deepin.wm"
+	wmswitcher "github.com/linuxdeepin/go-dbus-factory/com.deepin.wmswitcher"
+	x "github.com/linuxdeepin/go-x11-client"
 	"pkg.deepin.io/dde/daemon/common/dsync"
 	"pkg.deepin.io/gir/gio-2.0"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/gsprop"
 	"pkg.deepin.io/lib/dbusutil/proxy"
-	"pkg.deepin.io/lib/strv"
 )
 
 type Manager struct {
@@ -62,13 +61,14 @@ type Manager struct {
 	sessionSigLoop     *dbusutil.SignalLoop
 	syncConfig         *dsync.Config
 	clientList         windowSlice
-	clientListInited   bool
+	clientListInitEnd  bool
 	windowInfoMap      map[x.Window]*WindowInfo
 	windowInfoMapMutex sync.RWMutex
 	settings           *gio.Settings
 	appearanceSettings *gio.Settings
 	pluginSettings     *pluginSettingsStorage
 
+	entryDealChan   chan func()
 	rootWindow      x.Window
 	activeWindow    x.Window
 	activeWindowOld x.Window
@@ -84,17 +84,15 @@ type Manager struct {
 	identifyWindowFuns []*IdentifyWindowFunc
 	windowPatterns     WindowPatterns
 
-	tempUndockedFiles strv.Strv
-
 	// dbus objects:
-	launcher     *launcher.Launcher
-	ddeLauncher  *libDDELauncher.Launcher
-	wm           *wm.Wm
-	appsObj      *libApps.Apps
-	startManager *sessionmanager.StartManager
-	wmSwitcher   *wmswitcher.WMSwitcher
+	launcher     launcher.Launcher
+	ddeLauncher  libDDELauncher.Launcher
+	wm           wm.Wm
+	appsObj      libApps.Apps
+	startManager sessionmanager.StartManager
+	wmSwitcher   wmswitcher.WMSwitcher
 	wmName       string
-
+	//nolint
 	signals *struct {
 		ServiceRestarted struct{}
 		EntryAdded       struct {
@@ -106,31 +104,8 @@ type Manager struct {
 			entryId string
 		}
 
-		PluginSettingsSynced struct{}
+		PluginSettingsSynced  struct{}
 		DockAppSettingsSynced struct{}
-	}
-
-	methods *struct {
-		ActivateWindow            func() `in:"win"`
-		CloseWindow               func() `in:"win"`
-		MaximizeWindow            func() `in:"win"`
-		MinimizeWindow            func() `in:"win"`
-		MakeWindowAbove           func() `in:"win"`
-		MoveWindow                func() `in:"win"`
-		PreviewWindow             func() `in:"win"`
-		GetEntryIDs               func() `out:"list"`
-		SetFrontendWindowRect     func() `in:"x,y,width,height"`
-		IsDocked                  func() `in:"desktopFile" out:"value"`
-		RequestDock               func() `in:"desktopFile,index" out:"ok"`
-		RequestUndock             func() `in:"desktopFile" out:"ok"`
-		MoveEntry                 func() `in:"index,newIndex"`
-		IsOnDock                  func() `in:"desktopFile" out:"value"`
-		QueryWindowIdentifyMethod func() `in:"win" out:"identifyMethod"`
-		GetDockedAppsDesktopFiles func() `out:"desktopFiles"`
-		SetPluginSettings         func() `in:"jsonStr"`
-		GetPluginSettings         func() `out:"jsonStr"`
-		MergePluginSettings       func() `in:"jsonStr"`
-		RemovePluginSettings      func() `in:"key1,key2List"`
 	}
 }
 
@@ -281,10 +256,10 @@ func (m *Manager) CancelPreviewWindow() *dbus.Error {
 }
 
 // for debug
-func (m *Manager) GetEntryIDs() ([]string, *dbus.Error) {
+func (m *Manager) GetEntryIDs() (list []string, busErr *dbus.Error) {
 	entries := &m.Entries
 	entries.mu.RLock()
-	list := make([]string, 0, len(entries.items))
+	list = make([]string, 0, len(entries.items))
 	for _, entry := range entries.items {
 		var appId string
 		if entry.appInfo != nil {
@@ -310,12 +285,15 @@ func (m *Manager) SetFrontendWindowRect(x, y int32, width, height uint32) *dbus.
 	m.FrontendWindowRect.Y = y
 	m.FrontendWindowRect.Width = width
 	m.FrontendWindowRect.Height = height
-	m.service.EmitPropertyChanged(m, "FrontendWindowRect", m.FrontendWindowRect)
+	err := m.service.EmitPropertyChanged(m, "FrontendWindowRect", m.FrontendWindowRect)
+	if err != nil {
+		logger.Warning("EmitPropertyChanged error:", err)
+	}
 	m.updateHideState(false)
 	return nil
 }
 
-func (m *Manager) IsDocked(desktopFile string) (bool, *dbus.Error) {
+func (m *Manager) IsDocked(desktopFile string) (docked bool, busErr *dbus.Error) {
 	desktopFile = toLocalPath(desktopFile)
 	entry, err := m.getDockedAppEntryByDesktopFilePath(desktopFile)
 	if err != nil {
@@ -358,12 +336,12 @@ func (m *Manager) requestDock(desktopFile string, index int32) (bool, error) {
 	return docked, nil
 }
 
-func (m *Manager) RequestDock(desktopFile string, index int32) (bool, *dbus.Error) {
+func (m *Manager) RequestDock(desktopFile string, index int32) (docked bool, busErr *dbus.Error) {
 	docked, err := m.requestDock(desktopFile, index)
 	return docked, dbusutil.ToError(err)
 }
 
-func (m *Manager) RequestUndock(desktopFile string) (bool, *dbus.Error) {
+func (m *Manager) RequestUndock(desktopFile string) (undocked bool, busErr *dbus.Error) {
 	undocked, err := m.requestUndock(desktopFile)
 	return undocked, dbusutil.ToError(err)
 }
@@ -392,7 +370,7 @@ func (m *Manager) MoveEntry(index, newIndex int32) *dbus.Error {
 	return nil
 }
 
-func (m *Manager) IsOnDock(desktopFile string) (bool, *dbus.Error) {
+func (m *Manager) IsOnDock(desktopFile string) (onDock bool, busErr *dbus.Error) {
 	desktopFile = toLocalPath(desktopFile)
 	entry, err := m.Entries.GetByDesktopFilePath(desktopFile)
 	if err != nil {
@@ -401,7 +379,7 @@ func (m *Manager) IsOnDock(desktopFile string) (bool, *dbus.Error) {
 	return entry != nil, nil
 }
 
-func (m *Manager) QueryWindowIdentifyMethod(wid uint32) (string, *dbus.Error) {
+func (m *Manager) QueryWindowIdentifyMethod(wid uint32) (method string, busErr *dbus.Error) {
 	m.Entries.mu.RLock()
 	defer m.Entries.mu.RUnlock()
 
@@ -418,17 +396,16 @@ func (m *Manager) QueryWindowIdentifyMethod(wid uint32) (string, *dbus.Error) {
 	return "", dbusutil.ToError(fmt.Errorf("window %d not found", wid))
 }
 
-func (m *Manager) GetDockedAppsDesktopFiles() ([]string, *dbus.Error) {
-	var result []string
+func (m *Manager) GetDockedAppsDesktopFiles() (desktopFiles []string, busErr *dbus.Error) {
 	for _, entry := range m.Entries.FilterDocked() {
 		if entry.appInfo != nil {
-			result = append(result, entry.appInfo.GetFileName())
+			desktopFiles = append(desktopFiles, entry.appInfo.GetFileName())
 		}
 	}
-	return result, nil
+	return desktopFiles, nil
 }
 
-func (m *Manager) GetPluginSettings() (string, *dbus.Error) {
+func (m *Manager) GetPluginSettings() (jsonStr string, busErr *dbus.Error) {
 	jsonStr, err := m.pluginSettings.getJsonStr()
 	if err != nil {
 		return "", dbusutil.ToError(err)
@@ -460,4 +437,14 @@ func (m *Manager) MergePluginSettings(jsonStr string) *dbus.Error {
 func (m *Manager) RemovePluginSettings(key1 string, key2List []string) *dbus.Error {
 	m.pluginSettings.remove(key1, key2List)
 	return nil
+}
+
+// 在Dock添加上添加图标的时候，有时候windowInfo不完整
+// 会重复尝试10次，为了避免阻塞其他功能，放在goroutine里处理
+// 窗口的增加和减少是有顺序的，在这个单独的goroutine里处理
+func (m *Manager) accessEntries() {
+	for {
+		fun := <-m.entryDealChan
+		fun()
+	}
 }

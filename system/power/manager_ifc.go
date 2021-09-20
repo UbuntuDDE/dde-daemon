@@ -20,7 +20,11 @@
 package power
 
 import (
-	"pkg.deepin.io/lib/dbus1"
+	"errors"
+	"time"
+
+	dbus "github.com/godbus/dbus"
+	"pkg.deepin.io/lib/dbusutil"
 )
 
 const (
@@ -33,18 +37,18 @@ func (*Manager) GetInterfaceName() string {
 	return dbusInterface
 }
 
-func (m *Manager) GetBatteries() ([]dbus.ObjectPath, *dbus.Error) {
+func (m *Manager) GetBatteries() (batteries []dbus.ObjectPath, busErr *dbus.Error) {
 	m.batteriesMu.Lock()
 
-	result := make([]dbus.ObjectPath, len(m.batteries))
+	batteries = make([]dbus.ObjectPath, len(m.batteries))
 	idx := 0
 	for _, bat := range m.batteries {
-		result[idx] = bat.getObjPath()
+		batteries[idx] = bat.getObjPath()
 		idx++
 	}
 
 	m.batteriesMu.Unlock()
-	return result, nil
+	return batteries, nil
 }
 
 func (m *Manager) refreshBatteries() {
@@ -77,7 +81,74 @@ func (m *Manager) RefreshMains() *dbus.Error {
 }
 
 func (m *Manager) Refresh() *dbus.Error {
-	m.RefreshMains()
-	m.RefreshBatteries()
+	err := m.RefreshMains()
+	if err != nil {
+		return err
+	}
+	err = m.RefreshBatteries()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) SetCpuBoost(enabled bool) *dbus.Error {
+	err := m.cpus.SetBoostEnabled(enabled)
+	if err == nil {
+		m.setPropCpuBoost(enabled)
+	}
+	return dbusutil.ToError(err)
+}
+
+func (m *Manager) SetCpuGovernor(governor string) *dbus.Error {
+	err := m.cpus.SetGovernor(governor)
+	if err == nil {
+		m.setPropCpuGovernor(governor)
+	}
+	return dbusutil.ToError(err)
+}
+
+func (m *Manager) SetMode(mode string) *dbus.Error {
+	if m.Mode == mode {
+		return dbusutil.ToError(errors.New("Repeat switch"))
+	}
+
+	m.setPropPowerSavingModeAutoWhenBatteryLow(false)
+	m.setPropPowerSavingModeAuto(false)
+
+	err := m.doSetMode(mode)
+	if err == nil {
+		err = m.saveConfig()
+	}
+
+	logger.Warning(err)
+	return dbusutil.ToError(err)
+}
+
+func (m *Manager) LockCpuFreq(governor string, lockTime int32) *dbus.Error {
+	if !m.isCpuGovernorSupported(governor) {
+		logger.Warningf("cpu can not support this governor:%s", governor)
+	}
+
+	currentGovernor, err := m.cpus.GetGovernor()
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+
+	// change cpu governor
+	if governor != currentGovernor {
+		err = m.cpus.SetGovernor(governor)
+		if err != nil {
+			return dbusutil.ToError(err)
+		}
+
+		time.AfterFunc(time.Second*time.Duration(lockTime), func() {
+			err := m.cpus.SetGovernor(currentGovernor)
+			if err != nil {
+				logger.Warningf("rewrite cpu scaling_governor file failed:%v", err)
+			}
+		})
+	}
+
 	return nil
 }

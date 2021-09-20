@@ -27,37 +27,12 @@ import (
 	"pkg.deepin.io/gir/gio-2.0"
 	"pkg.deepin.io/lib/gsettings"
 
-	_ "pkg.deepin.io/dde/daemon/dock"
-	_ "pkg.deepin.io/dde/daemon/trayicon"
-	_ "pkg.deepin.io/dde/daemon/x_event_monitor"
-
-	_ "pkg.deepin.io/dde/daemon/network"
-
-	_ "pkg.deepin.io/dde/daemon/audio"
-
-	_ "pkg.deepin.io/dde/daemon/screensaver"
-	_ "pkg.deepin.io/dde/daemon/sessionwatcher"
-
-	// depends: screensaver, sessionwatcher
-	_ "pkg.deepin.io/dde/daemon/session/power"
-
-	_ "pkg.deepin.io/dde/daemon/launcher"
-	_ "pkg.deepin.io/dde/daemon/service_trigger"
-
-	_ "pkg.deepin.io/dde/daemon/clipboard"
-	_ "pkg.deepin.io/dde/daemon/keybinding"
-
 	_ "pkg.deepin.io/dde/daemon/appearance"
-	_ "pkg.deepin.io/dde/daemon/inputdevices"
-
-	_ "pkg.deepin.io/dde/daemon/gesture"
-	_ "pkg.deepin.io/dde/daemon/housekeeping"
-	_ "pkg.deepin.io/dde/daemon/timedate"
-
+	_ "pkg.deepin.io/dde/daemon/audio"
 	_ "pkg.deepin.io/dde/daemon/bluetooth"
 	_ "pkg.deepin.io/dde/daemon/screenedge"
 
-	_ "pkg.deepin.io/dde/daemon/calendar"
+	//_ "pkg.deepin.io/dde/daemon/calendar"
 	_ "pkg.deepin.io/dde/daemon/mime"
 
 	// depends: network
@@ -65,11 +40,29 @@ import (
 	_ "pkg.deepin.io/dde/daemon/systeminfo"
 
 	_ "pkg.deepin.io/dde/daemon/calltrace"
+	_ "pkg.deepin.io/dde/daemon/clipboard"
 	_ "pkg.deepin.io/dde/daemon/debug"
-
-	_ "pkg.deepin.io/dde/daemon/lastore"
-
+	_ "pkg.deepin.io/dde/daemon/dock"
+	_ "pkg.deepin.io/dde/daemon/gesture"
 	_ "pkg.deepin.io/dde/daemon/grub_gfx"
+	_ "pkg.deepin.io/dde/daemon/housekeeping"
+	_ "pkg.deepin.io/dde/daemon/inputdevices"
+	_ "pkg.deepin.io/dde/daemon/keybinding"
+	_ "pkg.deepin.io/dde/daemon/lastore"
+	_ "pkg.deepin.io/dde/daemon/launcher"
+	_ "pkg.deepin.io/dde/daemon/mime"
+	_ "pkg.deepin.io/dde/daemon/miracast"
+	_ "pkg.deepin.io/dde/daemon/network"
+	_ "pkg.deepin.io/dde/daemon/screenedge"
+	_ "pkg.deepin.io/dde/daemon/screensaver"
+	_ "pkg.deepin.io/dde/daemon/service_trigger"
+	_ "pkg.deepin.io/dde/daemon/session/power"
+	_ "pkg.deepin.io/dde/daemon/session/uadpagent"
+	_ "pkg.deepin.io/dde/daemon/sessionwatcher"
+	_ "pkg.deepin.io/dde/daemon/systeminfo"
+	_ "pkg.deepin.io/dde/daemon/timedate"
+	_ "pkg.deepin.io/dde/daemon/trayicon"
+	_ "pkg.deepin.io/dde/daemon/x_event_monitor"
 )
 
 var (
@@ -108,7 +101,7 @@ func checkDependencies(s *gio.Settings, module loader.Module, enabled bool) erro
 	if enabled {
 		depends := module.GetDependencies()
 		for _, n := range depends {
-			if s.GetBoolean(n) != true {
+			if !s.GetBoolean(n) {
 				return fmt.Errorf("Dependency lose: %v", n)
 			}
 		}
@@ -120,8 +113,8 @@ func checkDependencies(s *gio.Settings, module loader.Module, enabled bool) erro
 			continue
 		}
 
-		if m.IsEnable() == true && isStrInList(module.Name(), m.GetDependencies()) {
-			return fmt.Errorf("Can not diable this module '%s', because of it was depended by'%s'",
+		if m.IsEnable() && isStrInList(module.Name(), m.GetDependencies()) {
+			return fmt.Errorf("Can not disable this module '%s', because of it was depended by'%s'",
 				module.Name(), m.Name())
 		}
 	}

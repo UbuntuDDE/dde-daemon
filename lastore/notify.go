@@ -39,7 +39,6 @@ func getAppStoreAppName() string {
 }
 
 const (
-	notifyExpireTimeoutNever   = 0
 	notifyExpireTimeoutDefault = -1
 )
 
@@ -123,12 +122,7 @@ func (l *Lastore) notifyAutoClean() {
 	l.sendNotify("deepin-appstore", msg, nil, notifyExpireTimeoutDefault, "dde-control-center")
 }
 
-func (l *Lastore) notifySourceModified(actions []NotifyAction) {
-	msg := gettext.Tr("Your system source has been modified, please restore to official source for your normal use")
-	l.sendNotify("dialog-warning", msg, actions, notifyExpireTimeoutNever, getAppStoreAppName())
-}
-
 func (l *Lastore) notifyUpdateSource(actions []NotifyAction) {
 	msg := gettext.Tr("New system edition available")
-	l.sendNotify("dde-control-center", msg, actions, notifyExpireTimeoutDefault, "dde-control-center")
+	l.sendNotify("preferences-system", msg, actions, notifyExpireTimeoutDefault, "dde-control-center")
 }

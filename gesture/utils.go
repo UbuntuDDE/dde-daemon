@@ -21,20 +21,33 @@ package gesture
 
 import (
 	"fmt"
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.login1"
+	"io/ioutil"
+	"strings"
+
+	"github.com/godbus/dbus"
+	login1 "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.login1"
 	x "github.com/linuxdeepin/go-x11-client"
 	"github.com/linuxdeepin/go-x11-client/util/keybind"
 	"github.com/linuxdeepin/go-x11-client/util/wm/ewmh"
-	"io/ioutil"
-	"pkg.deepin.io/lib/dbus1"
-	"strings"
 )
 
 var (
 	xconn  *x.Conn
 	_dconn *dbus.Conn
-	_self  *login1.Session
+	_self  login1.Session
 )
+
+const (
+	positionTop int32 = iota
+	positionRight
+	positionBottom
+	positionLeft
+)
+
+type Rect struct {
+	X, Y          int32
+	Width, Height uint32
+}
 
 func isKbdAlreadyGrabbed() bool {
 	if getX11Conn() == nil {
@@ -63,7 +76,7 @@ func isKbdAlreadyGrabbed() bool {
 	err := keybind.GrabKeyboard(xconn, grabWin)
 	if err == nil {
 		// grab keyboard successful
-		keybind.UngrabKeyboard(xconn)
+		_ = keybind.UngrabKeyboard(xconn)
 		return false
 	}
 
@@ -95,7 +108,7 @@ func getCurrentActionWindowCmd() string {
 	return string(data)
 }
 
-func isSessionActive() bool {
+func isSessionActive(sessionPath dbus.ObjectPath) bool {
 	if _dconn == nil {
 		conn, err := dbus.SystemBus()
 		if err != nil {
@@ -106,7 +119,7 @@ func isSessionActive() bool {
 	}
 
 	if _self == nil {
-		self, err := login1.NewSession(_dconn, "/org/freedesktop/login1/session/self")
+		self, err := login1.NewSession(_dconn, sessionPath)
 		if err != nil {
 			logger.Error("Failed to connect self session:", err)
 			return false

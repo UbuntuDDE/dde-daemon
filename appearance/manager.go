@@ -36,12 +36,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+	dbus "github.com/godbus/dbus"
 	accounts "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.accounts"
+	display "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.display"
 	imageeffect "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.imageeffect"
+	sessiontimedate "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.timedate"
 	sessionmanager "github.com/linuxdeepin/go-dbus-factory/com.deepin.sessionmanager"
 	wm "github.com/linuxdeepin/go-dbus-factory/com.deepin.wm"
-	geoclue "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.geoclue2"
 	login1 "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.login1"
+	timedate "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.timedate1"
 	x "github.com/linuxdeepin/go-x11-client"
 	"github.com/linuxdeepin/go-x11-client/ext/randr"
 	"pkg.deepin.io/dde/api/theme_thumb"
@@ -52,16 +56,16 @@ import (
 	ddbus "pkg.deepin.io/dde/daemon/dbus"
 	"pkg.deepin.io/dde/daemon/session/common"
 	gio "pkg.deepin.io/gir/gio-2.0"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/gsprop"
 	"pkg.deepin.io/lib/dbusutil/proxy"
-	"pkg.deepin.io/lib/fsnotify"
 	"pkg.deepin.io/lib/log"
 	"pkg.deepin.io/lib/strv"
 	dutils "pkg.deepin.io/lib/utils"
 	"pkg.deepin.io/lib/xdg/basedir"
 )
+
+//go:generate dbusutil-gen em -type Manager
 
 // The supported types
 const (
@@ -79,6 +83,7 @@ const (
 	wrapBgSchema    = "com.deepin.wrap.gnome.desktop.background"
 	gnomeBgSchema   = "org.gnome.desktop.background"
 	gsKeyBackground = "picture-uri"
+	zonePath        = "/usr/share/zoneinfo/zone1970.tab"
 
 	appearanceSchema        = "com.deepin.dde.appearance"
 	xSettingsSchema         = "com.deepin.xsettings"
@@ -91,7 +96,9 @@ const (
 	gsKeyBackgroundURIs     = "background-uris"
 	gsKeyOpacity            = "opacity"
 	gsKeyWallpaperSlideshow = "wallpaper-slideshow"
+	gsKeyWallpaperURIs      = "wallpaper-uris"
 	gsKeyQtActiveColor      = "qt-active-color"
+	gsKeyDTKWindowRadius    = "dtk-window-radius"
 
 	propQtActiveColor = "QtActiveColor"
 
@@ -132,23 +139,31 @@ type Manager struct {
 	Opacity            gsprop.Double `prop:"access:rw"`
 	FontSize           gsprop.Double `prop:"access:rw"`
 	WallpaperSlideShow gsprop.String `prop:"access:rw"`
-	QtActiveColor      string        `prop:"access:rw"`
+	WallpaperURIs      gsprop.String
+	QtActiveColor      string `prop:"access:rw"`
+	// 社区版定制需求，保存窗口圆角值，默认 18
+	WindowRadius gsprop.Int `prop:"access:rw"`
 
 	wsLoopMap      map[string]*WSLoop
 	wsSchedulerMap map[string]*WSScheduler
+	monitorMap     map[string]string
+	coordinateMap  map[string]*coordinate
 
-	userObj             *accounts.User
-	imageBlur           *accounts.ImageBlur
-	imageEffect         *imageeffect.ImageEffect
-	xSettings           *sessionmanager.XSettings
-	login1Manager       *login1.Manager
-	geoclueClient       *geoclue.Client
+	userObj             accounts.User
+	imageBlur           accounts.ImageBlur
+	timeDate            timedate.Timedate
+	sessionTimeDate     sessiontimedate.Timedate
+	imageEffect         imageeffect.ImageEffect
+	xSettings           sessionmanager.XSettings
+	login1Manager       login1.Manager
 	themeAutoTimer      *time.Timer
+	display             display.Display
 	latitude            float64
 	longitude           float64
 	locationValid       bool
 	detectSysClockTimer *time.Timer
 	ts                  int64
+	loc                 *time.Location
 
 	setting        *gio.Settings
 	xSettingsGs    *gio.Settings
@@ -164,8 +179,9 @@ type Manager struct {
 	desktopBgs      []string
 	greeterBg       string
 	curMonitorSpace string
-	wm              *wm.Wm
+	wm              wm.Wm
 
+	//nolint
 	signals *struct {
 		// Theme setting changed
 		Changed struct {
@@ -178,25 +194,15 @@ type Manager struct {
 			type0 string
 		}
 	}
-
-	methods *struct {
-		Delete                func() `in:"type,name"`
-		GetScaleFactor        func() `out:"scale_factor"`
-		List                  func() `in:"type" out:"list"`
-		Set                   func() `in:"type,value"`
-		SetScaleFactor        func() `in:"scale_factor"`
-		Show                  func() `in:"type,names" out:"detail"`
-		Thumbnail             func() `in:"type,name" out:"file"`
-		SetScreenScaleFactors func() `in:"scaleFactors"`
-		GetScreenScaleFactors func() `out:"scaleFactors"`
-		SetMonitorBackground  func() `in:"monitorName,imageFile"`
-		SetWallpaperSlideShow func() `in:"monitorName,wallpaperSlideShow"`
-		GetWallpaperSlideShow func() `in:"monitorName" out:"slideShow"`
-	}
 }
 
 type mapMonitorWorkspaceWSPolicy map[string]string
 type mapMonitorWorkspaceWSConfig map[string]WSConfig
+type mapMonitorWorkspaceWallpaperURIs map[string]string
+
+type coordinate struct {
+	latitude, longitude float64
+}
 
 // NewManager will create a 'Manager' object
 func newManager(service *dbusutil.Service) *Manager {
@@ -215,6 +221,9 @@ func newManager(service *dbusutil.Service) *Manager {
 	m.FontSize.Bind(m.setting, gsKeyFontSize)
 	m.Opacity.Bind(m.setting, gsKeyOpacity)
 	m.WallpaperSlideShow.Bind(m.setting, gsKeyWallpaperSlideshow)
+	m.WallpaperURIs.Bind(m.setting, gsKeyWallpaperURIs)
+	// 社区版定制需求  保存窗口圆角值
+	m.WindowRadius.Bind(m.xSettingsGs, gsKeyDTKWindowRadius)
 	var err error
 	m.QtActiveColor, err = m.getQtActiveColor()
 	if err != nil {
@@ -223,13 +232,9 @@ func newManager(service *dbusutil.Service) *Manager {
 
 	m.wsLoopMap = make(map[string]*WSLoop)
 	m.wsSchedulerMap = make(map[string]*WSScheduler)
-	cfg, err := m.doUnmarshalWallpaperSlideshow(m.WallpaperSlideShow.Get())
-	if err == nil {
-		for icfg := range cfg {
-			m.wsLoopMap[icfg] = newWSLoop()
-			m.wsSchedulerMap[icfg] = newWSScheduler()
-		}
-	}
+	m.coordinateMap = make(map[string]*coordinate)
+
+	m.initCoordinate()
 
 	m.gnomeBgSetting, _ = dutils.CheckAndNewGSettings(gnomeBgSchema)
 
@@ -432,6 +437,10 @@ func (m *Manager) init() error {
 	if err != nil {
 		logger.Warning(err)
 	}
+	_, err = m.wm.ConnectWorkspaceSwitched(m.handleWmWorkspaceSwithched)
+	if err != nil {
+		logger.Warning(err)
+	}
 	m.imageBlur = accounts.NewImageBlur(systemBus)
 	m.imageEffect = imageeffect.NewImageEffect(systemBus)
 
@@ -448,15 +457,97 @@ func (m *Manager) init() error {
 		logger.Warning(err)
 	}
 
+	m.initUserObj(systemBus)
+	m.initCurrentBgs()
+	m.display = display.NewDisplay(sessionBus)
+	m.display.InitSignalExt(m.sessionSigLoop, true)
+	err = m.display.Monitors().ConnectChanged(func(hasValue bool, value []dbus.ObjectPath) {
+		m.handleDisplayChanged(hasValue)
+	})
+	if err != nil {
+		logger.Warning("failed to connect Monitors changed:", err)
+	}
+	err = m.display.Primary().ConnectChanged(func(hasValue bool, value string) {
+		m.handleDisplayChanged(hasValue)
+	})
+	if err != nil {
+		logger.Warning("failed to connect Primary changed:", err)
+	}
+	m.updateMonitorMap()
+	m.syncConfig = dsync.NewConfig("appearance", &syncConfig{m: m}, m.sessionSigLoop, dbusPath, logger)
+	m.bgSyncConfig = dsync.NewConfig("background", &backgroundSyncConfig{m: m}, m.sessionSigLoop,
+		backgroundDBusPath, logger)
+
 	m.sysSigLoop = dbusutil.NewSignalLoop(systemBus, 10)
 	m.sysSigLoop.Start()
 	m.login1Manager = login1.NewManager(systemBus)
 	m.login1Manager.InitSignalExt(m.sysSigLoop, true)
+	if m.WallpaperURIs.Get() == "" { // 壁纸设置更新为v2.0版本，但是数据依旧为v1.0的数据
+		err := m.updateNewVersionData()
+		if err != nil {
+			logger.Warning(err)
+		}
+	}
 	m.initWallpaperSlideshow()
+
+	m.timeDate = timedate.NewTimedate(systemBus)
+	m.timeDate.InitSignalExt(m.sysSigLoop, true)
+
+	m.sessionTimeDate = sessiontimedate.NewTimedate(sessionBus)
+	m.sessionTimeDate.InitSignalExt(m.sessionSigLoop, true)
+
+	zone, err := m.timeDate.Timezone().Get(0)
+	if err != nil {
+		logger.Warning("Get Timezone Failed:", err)
+	}
+	l, err := time.LoadLocation(zone)
+	if err != nil {
+		logger.Warning("LoadLocation Failed :", err)
+	}
+	m.loc = l
+	err = m.timeDate.Timezone().ConnectChanged(func(hasValue bool, value string) {
+		if err != nil {
+			logger.Warning(err)
+		}
+		for ct, coordinate := range m.coordinateMap {
+			if value == ct {
+				m.longitude = coordinate.longitude
+				m.latitude = coordinate.latitude
+			}
+		}
+		l, err := time.LoadLocation(value)
+		if err != nil {
+			logger.Warning("LoadLocation Failed :", err)
+		}
+		m.loc = l
+		logger.Debug("value", value, m.longitude, m.latitude)
+		if m.GtkTheme.Get() == autoGtkTheme {
+			m.autoSetTheme(m.latitude, m.longitude)
+			m.resetThemeAutoTimer()
+		}
+	})
+
+	if err != nil {
+		logger.Warning(err)
+	}
 
 	err = m.loadDefaultFontConfig(defaultFontConfigFile)
 	if err != nil {
 		logger.Warning("load default font config failed:", err)
+	}
+
+	//修改时间后通过信号通知自动改变主题
+	_, err = m.sessionTimeDate.ConnectTimeUpdate(func() {
+		time.AfterFunc(2*time.Second, m.handleSysClockChanged)
+	})
+	if err != nil {
+		logger.Warning("connect signal TimeUpdate failed:", err)
+	}
+	err = m.timeDate.NTP().ConnectChanged(func(hasValue bool, value bool) {
+		time.AfterFunc(2*time.Second, m.handleSysClockChanged)
+	})
+	if err != nil {
+		logger.Warning("connect NTP failed:", err)
 	}
 
 	// set gtk theme
@@ -530,12 +621,18 @@ func (m *Manager) init() error {
 		}
 	})
 
-	m.initUserObj(systemBus)
-	m.initCurrentBgs()
-	m.syncConfig = dsync.NewConfig("appearance", &syncConfig{m: m}, m.sessionSigLoop, dbusPath, logger)
-	m.bgSyncConfig = dsync.NewConfig("background", &backgroundSyncConfig{m: m}, m.sessionSigLoop,
-		backgroundDBusPath, logger)
 	return nil
+}
+
+func (m *Manager) handleDisplayChanged(hasValue bool) {
+	if !hasValue {
+		return
+	}
+	m.updateMonitorMap()
+	err := m.doUpdateWallpaperURIs()
+	if err != nil {
+		logger.Warning("failed to update WallpaperURIs:", err)
+	}
 }
 
 func (m *Manager) handleWmWorkspaceCountChanged(count int32) {
@@ -554,6 +651,21 @@ func (m *Manager) handleWmWorkspaceCountChanged(count int32) {
 	} else if len(bgs) > int(count) {
 		bgs = bgs[:int(count)]
 		m.setting.SetStrv(gsKeyBackgroundURIs, bgs)
+	}
+	err := m.doUpdateWallpaperURIs()
+	if err != nil {
+		logger.Warning("failed to update WallpaperURIs:", err)
+	}
+}
+
+//切换工作区
+func (m *Manager) handleWmWorkspaceSwithched(from, to int32) {
+	logger.Debugf("wm workspace switched from %d to %d", from, to)
+	if m.userObj != nil {
+		err := m.userObj.SetCurrentWorkspace(0, to)
+		if err != nil {
+			logger.Warning("call userObj.SetCurrentWorkspace err:", err)
+		}
 	}
 }
 
@@ -660,6 +772,10 @@ func (m *Manager) doSetMonitorBackground(monitorName string, imageFile string) (
 	if err != nil {
 		return "", err
 	}
+	err = m.doUpdateWallpaperURIs()
+	if err != nil {
+		logger.Warning("failed to update WallpaperURIs:", err)
+	}
 	_, err = m.imageBlur.Get(0, file)
 	if err != nil {
 		logger.Warning("call imageBlur.Get err:", err)
@@ -675,19 +791,100 @@ func (m *Manager) doSetMonitorBackground(monitorName string, imageFile string) (
 	return file, nil
 }
 
-func (m *Manager) doUnmarshalWallpaperSlideshow(jsonString string) (mapMonitorWorkspaceWSPolicy, error) {
+func (m *Manager) updateMonitorMap() {
+	monitorList, _ := m.display.ListOutputNames(0)
+	primary, _ := m.display.Primary().Get(0)
+	index := 0
+	m.monitorMap = make(map[string]string)
+	for _, item := range monitorList {
+		if item == primary {
+			m.monitorMap[item] = "Primary"
+		} else {
+			m.monitorMap[item] = "Subsidiary" + strconv.Itoa(index)
+			index++
+		}
+	}
+}
+
+func (m *Manager) reverseMonitorMap() map[string]string {
+	reverseMap := make(map[string]string)
+	for k, v := range m.monitorMap {
+		reverseMap[v] = k
+	}
+	return reverseMap
+}
+
+func (m *Manager) doUpdateWallpaperURIs() error {
+	mapWallpaperURIs := make(mapMonitorWorkspaceWallpaperURIs)
+	workspaceCount, _ := m.wm.WorkspaceCount(0)
+	monitorList, _ := m.display.ListOutputNames(0)
+	for _, monitor := range monitorList {
+		for idx := int32(1); idx <= workspaceCount; idx++ {
+			wallpaperURI, err := m.wm.GetWorkspaceBackgroundForMonitor(0, idx, monitor)
+			if err != nil {
+				logger.Warning("get wallpaperURI failed:", err)
+				continue
+			}
+			key := genMonitorKeyString(m.monitorMap[monitor], int(idx))
+			mapWallpaperURIs[key] = wallpaperURI
+		}
+	}
+
+	err := m.setPropertyWallpaperURIs(mapWallpaperURIs)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func doUnmarshalMonitorWorkspaceWallpaperURIs(jsonString string) (mapMonitorWorkspaceWallpaperURIs, error) {
+	var cfg mapMonitorWorkspaceWallpaperURIs
+	var byteMonitorWorkspaceWallpaperURIs = []byte(jsonString)
+	err := json.Unmarshal(byteMonitorWorkspaceWallpaperURIs, &cfg)
+	return cfg, err
+}
+
+func doMarshalMonitorWorkspaceWallpaperURIs(cfg mapMonitorWorkspaceWallpaperURIs) (string, error) {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return "", err
+	}
+	return string(data), err
+}
+
+func (m *Manager) setPropertyWallpaperURIs(cfg mapMonitorWorkspaceWallpaperURIs) error {
+	uris, err := doMarshalMonitorWorkspaceWallpaperURIs(cfg)
+	if err != nil {
+		logger.Warning(err)
+		return err
+	}
+	m.WallpaperURIs.Set(uris)
+	return nil
+}
+
+func doUnmarshalWallpaperSlideshow(jsonString string) (mapMonitorWorkspaceWSPolicy, error) {
 	var cfg mapMonitorWorkspaceWSPolicy
 	var byteWallpaperSlideShow []byte = []byte(jsonString)
 	err := json.Unmarshal(byteWallpaperSlideShow, &cfg)
 	return cfg, err
 }
 
-func (m *Manager) doMarshalWallpaperSlideshow(cfg mapMonitorWorkspaceWSPolicy) (string, error) {
+func doMarshalWallpaperSlideshow(cfg mapMonitorWorkspaceWSPolicy) (string, error) {
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return "", err
 	}
 	return string(data), err
+}
+
+func (m *Manager) setPropertyWallpaperSlideShow(cfg mapMonitorWorkspaceWSPolicy) error {
+	slideshow, err := doMarshalWallpaperSlideshow(cfg)
+	if err != nil {
+		logger.Warning(err)
+		return err
+	}
+	m.WallpaperSlideShow.Set(slideshow)
+	return nil
 }
 
 func (m *Manager) doSetWallpaperSlideShow(monitorName string, wallpaperSlideShow string) error {
@@ -696,17 +893,20 @@ func (m *Manager) doSetWallpaperSlideShow(monitorName string, wallpaperSlideShow
 		logger.Warning("Get Current Workspace failure:", err)
 		return err
 	}
-	cfg, err := m.doUnmarshalWallpaperSlideshow(m.WallpaperSlideShow.Get())
+	cfg, err := doUnmarshalWallpaperSlideshow(m.WallpaperSlideShow.Get())
+	if err != nil {
+		logger.Warning("doUnmarshalWallpaperSlideshow Failed:", err)
+	}
 	if cfg == nil {
 		cfg = make(mapMonitorWorkspaceWSPolicy)
 	}
-	key := monitorName + "&&" + strconv.Itoa(int(idx))
+
+	key := genMonitorKeyString(monitorName, int(idx))
 	cfg[key] = wallpaperSlideShow
-	strAllWallpaperSlideShow, err := m.doMarshalWallpaperSlideshow(cfg)
+	err = m.setPropertyWallpaperSlideShow(cfg)
 	if err != nil {
-		logger.Warning("Marshal Wallpaper Slideshow failure:", err)
+		return err
 	}
-	m.WallpaperSlideShow.Set(strAllWallpaperSlideShow)
 	m.curMonitorSpace = key
 	return nil
 }
@@ -717,11 +917,11 @@ func (m *Manager) doGetWallpaperSlideShow(monitorName string) (string, error) {
 		logger.Warning("Get Current Workspace failure:", err)
 		return "", err
 	}
-	cfg, err := m.doUnmarshalWallpaperSlideshow(m.WallpaperSlideShow.Get())
+	cfg, err := doUnmarshalWallpaperSlideshow(m.WallpaperSlideShow.Get())
 	if err != nil {
 		return "", nil
 	}
-	key := monitorName + "&&" + strconv.Itoa(int(idx))
+	key := genMonitorKeyString(monitorName, int(idx))
 	wallpaperSlideShow := cfg[key]
 	return wallpaperSlideShow, nil
 }
@@ -951,36 +1151,28 @@ func (m *Manager) autoChangeBg(monitorSpace string, t time.Time) {
 }
 
 func (m *Manager) initWallpaperSlideshow() {
-	// move to power module
-	// _, err := m.login1Manager.ConnectPrepareForSleep(func(before bool) {
-	// 	if !before {
-	// 		// after sleep
-	// 		if m.WallpaperSlideShow.Get() == wsPolicyWakeup {
-	// 			m.autoChangeBg(time.Now())
-	// 		}
-	// 	}
-	// })
-	// if err != nil {
-	// 	logger.Warning(err)
-	// }
 	m.loadWSConfig()
-	cfg, err := m.doUnmarshalWallpaperSlideshow(m.WallpaperSlideShow.Get())
+	cfg, err := doUnmarshalWallpaperSlideshow(m.WallpaperSlideShow.Get())
 	if err == nil {
-		for icfg := range cfg {
-			if m.wsSchedulerMap[icfg] != nil {
-				m.wsSchedulerMap[icfg].fn = m.autoChangeBg
+		for monitorSpace, policy := range cfg {
+			_, ok := m.wsSchedulerMap[monitorSpace]
+			if !ok {
+				m.wsSchedulerMap[monitorSpace] = newWSScheduler(m.autoChangeBg)
 			}
-			policy := cfg[icfg]
+			_, ok = m.wsLoopMap[monitorSpace]
+			if !ok {
+				m.wsLoopMap[monitorSpace] = newWSLoop()
+			}
 			if isValidWSPolicy(policy) {
 				if policy == wsPolicyLogin {
-					err := m.changeBgAfterLogin(icfg)
+					err := m.changeBgAfterLogin(monitorSpace)
 					if err != nil {
 						logger.Warning("failed to change background after login:", err)
 					}
 				} else {
 					nSec, err := strconv.ParseUint(policy, 10, 32)
-					if err == nil && m.wsSchedulerMap[icfg] != nil {
-						m.wsSchedulerMap[icfg].updateInterval(icfg, time.Duration(nSec)*time.Second)
+					if err == nil && m.wsSchedulerMap[monitorSpace] != nil {
+						m.wsSchedulerMap[monitorSpace].updateInterval(monitorSpace, time.Duration(nSec)*time.Second)
 					}
 				}
 			}
@@ -1037,7 +1229,7 @@ func (m *Manager) loadWSConfig() {
 	for monitorSpace := range cfg {
 		_, ok := m.wsSchedulerMap[monitorSpace]
 		if !ok {
-			m.wsSchedulerMap[monitorSpace] = newWSScheduler()
+			m.wsSchedulerMap[monitorSpace] = newWSScheduler(m.autoChangeBg)
 		}
 		m.wsSchedulerMap[monitorSpace].mu.Lock()
 		m.wsSchedulerMap[monitorSpace].lastSetBg = cfg[monitorSpace].LastChange
@@ -1056,30 +1248,29 @@ func (m *Manager) loadWSConfig() {
 }
 
 func (m *Manager) updateWSPolicy(policy string) {
-	cfg, err := m.doUnmarshalWallpaperSlideshow(policy)
+	cfg, err := doUnmarshalWallpaperSlideshow(policy)
 	m.loadWSConfig()
 	if err == nil {
-		for icfg := range cfg {
-			policy = cfg[icfg]
-			_, ok := m.wsSchedulerMap[icfg]
+		for monitorSpace, policy := range cfg {
+			_, ok := m.wsSchedulerMap[monitorSpace]
 			if !ok {
-				m.wsSchedulerMap[icfg] = newWSScheduler()
+				m.wsSchedulerMap[monitorSpace] = newWSScheduler(m.autoChangeBg)
 			}
-			_, ok = m.wsLoopMap[icfg]
+			_, ok = m.wsLoopMap[monitorSpace]
 			if !ok {
-				m.wsLoopMap[icfg] = newWSLoop()
+				m.wsLoopMap[monitorSpace] = newWSLoop()
 			}
-			if m.curMonitorSpace == icfg && isValidWSPolicy(policy) {
+			if m.curMonitorSpace == monitorSpace && isValidWSPolicy(policy) {
 				nSec, err := strconv.ParseUint(policy, 10, 32)
 				if err == nil {
-					m.wsSchedulerMap[icfg].lastSetBg = time.Now()
-					m.wsSchedulerMap[icfg].updateInterval(icfg, time.Duration(nSec)*time.Second)
-					err = m.saveWSConfig(icfg, time.Now())
+					m.wsSchedulerMap[monitorSpace].lastSetBg = time.Now()
+					m.wsSchedulerMap[monitorSpace].updateInterval(monitorSpace, time.Duration(nSec)*time.Second)
+					err = m.saveWSConfig(monitorSpace, time.Now())
 					if err != nil {
 						logger.Warning(err)
 					}
 				} else {
-					m.wsSchedulerMap[icfg].stop()
+					m.wsSchedulerMap[monitorSpace].stop()
 				}
 			}
 		}
@@ -1087,7 +1278,6 @@ func (m *Manager) updateWSPolicy(policy string) {
 }
 
 func (m *Manager) enableDetectSysClock(enabled bool) {
-	logger.Debug("enableDetectSysClock:", enabled)
 	nSec := 60 // 1 min
 	if logger.GetLogLevel() == log.LevelDebug {
 		// debug mode: 10 s
@@ -1145,78 +1335,21 @@ func (m *Manager) updateThemeAuto(enabled bool) {
 			m.themeAutoTimer.Reset(0)
 		}
 
-		if m.geoclueClient == nil {
-			m.geoclueClient, err = getGeoclueClient()
-			if err != nil {
-				logger.Warning("failed to get geoclue client:", err)
-				return
-			}
-
-			m.geoclueClient.InitSignalExt(m.sysSigLoop, true)
-			_, err = m.geoclueClient.ConnectLocationUpdated(
-				func(old dbus.ObjectPath, newLoc dbus.ObjectPath) {
-					sysBus, err := dbus.SystemBus()
-					if err != nil {
-						logger.Warning(err)
-						return
-					}
-					loc, err := geoclue.NewLocation(sysBus, newLoc)
-					if err != nil {
-						logger.Warning(err)
-						return
-					}
-
-					latitude, err := loc.Latitude().Get(0)
-					if err != nil {
-						logger.Warning("failed to get latitude:", err)
-						return
-					}
-
-					longitude, err := loc.Longitude().Get(0)
-					if err != nil {
-						logger.Warning("failed to get longitude:", err)
-						return
-					}
-					m.updateLocation(latitude, longitude)
-				})
-			if err != nil {
-				logger.Warning(err)
-			}
-		}
-
-		locPath, err := m.geoclueClient.Location().Get(0)
-		if err == nil {
-			if locPath != "/" {
-				latitude, longitude, err := getLocation(locPath)
-				if err == nil {
-					m.updateLocation(latitude, longitude)
-				} else {
-					logger.Warning("failed to get location:", err)
-				}
-			} else {
-				logger.Debug("wait location updated signal")
-			}
-		} else {
-			logger.Warning("failed to get geoclue client location path:", err)
-		}
-
-		err = m.geoclueClient.Start(0)
+		city, err := m.timeDate.Timezone().Get(0)
 		if err != nil {
-			logger.Warning("failed to start geoclue client:", err)
-			return
+			logger.Warning(err)
 		}
+		for ct, coordinate := range m.coordinateMap {
+			if city == ct {
+				m.longitude = coordinate.longitude
+				m.latitude = coordinate.latitude
+			}
+		}
+
+		m.updateLocation(m.latitude, m.longitude)
+		logger.Debug("city", city, m.longitude, m.latitude)
 
 	} else {
-		// disable geoclue client
-		if m.geoclueClient != nil {
-			err := m.geoclueClient.Stop(0)
-			if err != nil {
-				logger.Warning("failed to stop geoclue client:", err)
-			}
-
-			m.geoclueClient.RemoveAllHandlers()
-			m.geoclueClient = nil
-		}
 		m.latitude = 0
 		m.longitude = 0
 		m.locationValid = false
@@ -1246,8 +1379,8 @@ func (m *Manager) resetThemeAutoTimer() {
 		return
 	}
 
-	now := time.Now()
-	changeTime, err := getThemeAutoChangeTime(now, m.latitude, m.longitude)
+	now := time.Now().In(m.loc)
+	changeTime, err := m.getThemeAutoChangeTime(now, m.latitude, m.longitude)
 	if err != nil {
 		logger.Warning("failed to get theme auto change time:", err)
 		return
@@ -1259,12 +1392,12 @@ func (m *Manager) resetThemeAutoTimer() {
 }
 
 func (m *Manager) autoSetTheme(latitude, longitude float64) {
-	now := time.Now()
+	now := time.Now().In(m.loc)
 	if m.GtkTheme.Get() != autoGtkTheme {
 		return
 	}
 
-	sunriseT, sunsetT, err := getSunriseSunset(now, latitude, longitude)
+	sunriseT, sunsetT, err := m.getSunriseSunset(now, latitude, longitude)
 	if err != nil {
 		logger.Warning(err)
 		return
@@ -1361,6 +1494,48 @@ func (m *Manager) setQtActiveColor(hexColor string) error {
 	return nil
 }
 
+// 原有的壁纸数据保存在background-uris字段中，当壁纸模块升级后，将该数据迁移至wallpaper-uris中;
+// wallpaper-slideshow前后版本的格式不同，根据旧数据重新生成新数据
+func (m *Manager) updateNewVersionData() error {
+	reverseMonitorMap := m.reverseMonitorMap()
+	primaryMonitor := reverseMonitorMap["Primary"]
+	slideshowConfig := make(mapMonitorWorkspaceWSPolicy)
+	slideShow := m.WallpaperSlideShow.Get()
+	workspaceCount, _ := m.wm.WorkspaceCount(0)
+	_, err := doUnmarshalWallpaperSlideshow(slideShow)
+	if err != nil {
+		// slideShow的内容无法解析为map[string]string数据表示低版本壁纸，进行数据格式转换
+		for i := 1; i <= int(workspaceCount); i++ {
+			key := genMonitorKeyString(primaryMonitor, i)
+			slideshowConfig[key] = slideShow
+		}
+		err := m.setPropertyWallpaperSlideShow(slideshowConfig)
+		if err != nil {
+			return err
+		}
+	}
+
+	// V20对应SP3, SP2阶段gsettings background-uris中部分数据丢失，SP2升到SP3通过窗管接口获取壁纸
+	monitorWorkspaceWallpaperURIs := make(mapMonitorWorkspaceWallpaperURIs)
+	for monitorName, convertMonitorName := range m.monitorMap {
+		for i := int32(0); i < workspaceCount; i++ {
+			uri, err := m.wm.GetWorkspaceBackgroundForMonitor(0, i+1, monitorName)
+			if err != nil {
+				logger.Warningf("failed to get monitor:%v workspace:%v background:%v", monitorName, i+1, err)
+				continue
+			}
+
+			key := genMonitorKeyString(convertMonitorName, i+1)
+			monitorWorkspaceWallpaperURIs[key] = uri
+		}
+	}
+	return m.setPropertyWallpaperURIs(monitorWorkspaceWallpaperURIs)
+}
+
+func genMonitorKeyString(monitor string, idx interface{}) string {
+	return fmt.Sprintf("%v&&%v", monitor, idx)
+}
+
 func hexColorToXsColor(hexColor string) (string, error) {
 	byteArr, err := parseHexColor(hexColor)
 	if err != nil {
@@ -1372,4 +1547,42 @@ func hexColorToXsColor(hexColor string) (string, error) {
 	}
 	return fmt.Sprintf("%d,%d,%d,%d", array[0], array[1],
 		array[2], array[3]), nil
+}
+
+func (m *Manager) initCoordinate() {
+	content, err := ioutil.ReadFile(zonePath)
+	if err != nil {
+		logger.Warning(err)
+		return
+	}
+	var (
+		lines = strings.Split(string(content), "\n")
+		match = regexp.MustCompile(`^#`)
+	)
+	for _, line := range lines {
+		if len(line) == 0 {
+			continue
+		}
+
+		if match.MatchString(line) {
+			continue
+		}
+		strv := strings.Split(line, "\t")
+		m.iso6709Parsing(string(strv[2]), strv[1])
+	}
+}
+
+func (m *Manager) iso6709Parsing(city, coordinates string) {
+	var cdn coordinate
+	match := regexp.MustCompile(`(\+|-)\d+\.?\d*`)
+
+	temp := match.FindAllString(coordinates, 2)
+
+	temp[0] = temp[0][:3] + "." + temp[0][3:]
+	temp[1] = temp[1][:4] + "." + temp[1][4:]
+	lat, _ := strconv.ParseFloat(temp[0], 64)
+	lon, _ := strconv.ParseFloat(temp[1], 64)
+	cdn.longitude = lon
+	cdn.latitude = lat
+	m.coordinateMap[city] = &cdn
 }

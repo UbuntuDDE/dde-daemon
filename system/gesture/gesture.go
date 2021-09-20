@@ -26,10 +26,13 @@ package gesture
 import "C"
 
 import (
+	dbus "github.com/godbus/dbus"
 	"pkg.deepin.io/dde/daemon/loader"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/log"
 )
+
+//go:generate dbusutil-gen em -type Manager
 
 const (
 	dbusServiceName = "com.deepin.daemon.Gesture"
@@ -39,6 +42,7 @@ const (
 
 type GestureType int32
 type TouchType int32
+type TouchDirection int32
 
 var (
 	GestureTypeSwipe = GestureType(C.GESTURE_TYPE_SWIPE)
@@ -57,6 +61,17 @@ var (
 
 	ButtonTypeDown = TouchType(C.BUTTON_TYPE_DOWN)
 	ButtonTypeUp   = TouchType(C.BUTTON_TYPE_UP)
+
+	//handleTouchScreenEvent
+	TouchDirectionNone  = TouchDirection(C.DIR_NONE)
+	TouchDirectionTop   = TouchDirection(C.DIR_TOP)
+	TouchDirectionRight = TouchDirection(C.DIR_RIGHT)
+	TouchDirectionBot   = TouchDirection(C.DIR_BOT)
+	TouchDirectionLeft  = TouchDirection(C.DIR_LEFT)
+	TouchTypeNone       = TouchType(C.GT_NONE)
+	TouchTypeTap        = TouchType(C.GT_TAP)
+	TouchTypeMovement   = TouchType(C.GT_MOVEMENT)
+	TouchTypeEdge       = TouchType(C.GT_EDGE)
 )
 
 func (t GestureType) String() string {
@@ -93,17 +108,102 @@ func (t TouchType) String() string {
 		return "down"
 	case ButtonTypeUp:
 		return "up"
+	case TouchTypeNone:
+		return "touch none"
+	case TouchTypeTap:
+		return "touch tap"
+	case TouchTypeMovement:
+		return "touch movement"
+	case TouchTypeEdge:
+		return "touch edge"
+
+	}
+	return "Unknown"
+}
+
+func (t TouchDirection) String() string {
+	switch t {
+	case TouchDirectionNone:
+		return "none"
+	case TouchDirectionTop:
+		return "top"
+	case TouchDirectionRight:
+		return "right"
+	case TouchDirectionBot:
+		return "bot"
+	case TouchDirectionLeft:
+		return "left"
 	}
 	return "Unknown"
 }
 
 type Manager struct {
 	service *dbusutil.Service
+
+	// nolint
 	signals *struct {
 		Event struct {
 			name      string
 			direction string
 			fingers   int32
+		}
+
+		//gesture double click down
+		DbclickDown struct {
+			fingers int32
+		}
+
+		//gesture swipe moving info
+		SwipeMoving struct {
+			fingers        int32
+			accelX, accelY float64
+		}
+
+		//gesture swipe stop or interrupted
+		SwipeStop struct {
+			fingers int32
+		}
+
+		TouchEdgeEvent struct {
+			direction      string
+			scaleX, scaleY float64
+		}
+
+		TouchMovementEvent struct {
+			direction                string
+			fingers                  int32
+			startScaleX, startScaleY float64
+			endScaleX, endScaleY     float64
+		}
+
+		TouchSinglePressTimeout struct {
+			time           int32
+			scaleX, scaleY float64
+		}
+
+		TouchPressTimeout struct {
+			fingers, time  int32
+			scaleX, scaleY float64
+		}
+
+		TouchUpOrCancel struct {
+			scaleX, scaleY float64
+		}
+
+		TouchEdgeMoveStop struct {
+			direction      string
+			scaleX, scaleY float64
+			duration       int
+		}
+
+		TouchEdgeMoveStopLeave struct {
+			direction      string
+			scaleX, scaleY float64
+			duration       int
+		}
+
+		TouchMoving struct {
+			scalex, scaley float64
 		}
 	}
 }
@@ -135,27 +235,136 @@ func (*Manager) GetInterfaceName() string {
 	return dbusInterface
 }
 
+//duration unit ms
+func (*Manager) SetShortPressDuration(duration int) *dbus.Error {
+	C.set_timer_short_duration(C.int(duration))
+	return nil
+}
+
+//duration unit ms
+func (*Manager) SetEdgeMoveStopDuration(duration int) *dbus.Error {
+	C.set_edge_move_stop_time(C.int(duration))
+	return nil
+}
+
+func (*Manager) SetInputIgnore(node string, isIgnore bool) *dbus.Error {
+	C.set_device_ignore(C.CString(node), C.bool(isIgnore))
+	return nil
+}
+
+//touchpad gesture
 //export handleGestureEvent
 func handleGestureEvent(ty, direction, fingers C.int) {
-	logger.Debug("Emit gesture event:", GestureType(ty).String(),
-		GestureType(direction).String(),
-		int32(fingers))
-	_m.service.Emit(_m, "Event", GestureType(ty).String(),
-		GestureType(direction).String(),
-		int32(fingers))
+	err := _m.service.Emit(_m, "Event", GestureType(ty).String(),
+		GestureType(direction).String(), int32(fingers))
+	if err != nil {
+		logger.Error("handleGestureEvent failed:", err)
+	}
 }
 
+//export handleDbclickDown
+func handleDbclickDown(fingers C.int) {
+	err := _m.service.Emit(_m, "DbclickDown", int32(fingers))
+	if err != nil {
+		logger.Error("handleDbclickDown failed:", err)
+	}
+}
+
+//export handleSwipeMoving
+func handleSwipeMoving(fingers C.int, accelX, accelY C.double) {
+	logger.Debug("emit SwipeMoving:", float64(accelX), float64(accelY))
+	err := _m.service.Emit(_m, "SwipeMoving", int32(fingers), float64(accelX), float64(accelY))
+	if err != nil {
+		logger.Error("handleSwipeMoving failed:", err)
+	}
+}
+
+//export handleSwipeStop
+func handleSwipeStop(fingers C.int) {
+	logger.Debug("emit SwipeStop:", int32(fingers))
+	err := _m.service.Emit(_m, "SwipeStop", int32(fingers))
+	if err != nil {
+		logger.Error("handleSwipeStop failed:", err)
+	}
+}
+
+//touchscreen gesture
 //export handleTouchEvent
 func handleTouchEvent(ty, btn C.int) {
-	logger.Debug("Emit touch event:", TouchType(ty).String(),
-		TouchType(btn).String())
-	_m.service.Emit(_m, "Event", TouchType(ty).String(),
+	err := _m.service.Emit(_m, "Event", TouchType(ty).String(),
 		TouchType(btn).String(), 0)
+	if err != nil {
+		logger.Error("handleTouchEvent failed:", err)
+	}
 }
 
-func (*Daemon) Start() error {
+//export handleTouchScreenEvent
+func handleTouchScreenEvent(ty, direction, fingers C.int, startScaleX, startScaleY, endScaleX, endScaleY C.double) {
+	switch int(ty) {
+	case int(C.get_edge_type()):
+		err := _m.service.Emit(_m, "TouchEdgeEvent", TouchDirection(direction).String(), float64(endScaleX), float64(endScaleY))
+		if err != nil {
+			logger.Error("handleTouchScreenEvent failed:", err)
+		}
+	case int(C.get_movement_type()):
+		err := _m.service.Emit(_m, "TouchMovementEvent", TouchDirection(direction).String(), fingers, float64(startScaleX), float64(startScaleY), float64(endScaleX), float64(endScaleY))
+		if err != nil {
+			logger.Error("handleTouchMovementEvent failed:", err)
+		}
+	}
+}
+
+//export handleTouchEdgeMoveStop
+func handleTouchEdgeMoveStop(direction C.int, x, y C.double, duration C.int) {
+	err := _m.service.Emit(_m, "TouchEdgeMoveStop", TouchDirection(direction).String(), float64(x), float64(y), int(duration))
+	if err != nil {
+		logger.Error("handleTouchEdgeMoveStop failed:", err)
+	}
+}
+
+//export handleTouchEdgeMoveStopLeave
+func handleTouchEdgeMoveStopLeave(direction C.int, x, y C.double, duration C.int) {
+	err := _m.service.Emit(_m, "TouchEdgeMoveStopLeave", TouchDirection(direction).String(), float64(x), float64(y), int(duration))
+	if err != nil {
+		logger.Error("handleTouchEdgeMoveStopLeave failed:", err)
+	}
+}
+
+//export handleTouchMoving
+func handleTouchMoving(scalex, scaley C.double) {
+	err := _m.service.Emit(_m, "TouchMoving", float64(scalex), float64(scaley))
+	if err != nil {
+		logger.Error("handleTouchMoving failed:", err)
+	}
+}
+
+//export handleTouchShortPress
+func handleTouchShortPress(time C.int, scalex, scaley C.double) {
+	err := _m.service.Emit(_m, "TouchSinglePressTimeout", int32(time), float64(scalex), float64(scaley))
+	if err != nil {
+		logger.Error("handleTouchShortPress failed:", err)
+	}
+}
+
+//export handleTouchPressTimeout
+func handleTouchPressTimeout(fingers, time C.int, scalex, scaley C.double) {
+	err := _m.service.Emit(_m, "TouchPressTimeout", int32(fingers), int(time), float64(scalex), float64(scaley))
+	if err != nil {
+		logger.Error("handleTouchPressTimeout", err)
+	}
+}
+
+//export handleTouchUpOrCancel
+func handleTouchUpOrCancel(scalex, scaley C.double) {
+	err := _m.service.Emit(_m, "TouchUpOrCancel", float64(scalex), float64(scaley))
+	if err != nil {
+		logger.Error("handleTouchUpOrCancel failed:", err)
+	}
+}
+
+func (d *Daemon) Start() error {
 	logger.BeginTracing()
-	logger.Info("Start gesture daemon")
+	logger.Info("start gesture daemon")
 	service := loader.GetService()
 	_m = &Manager{
 		service: service,

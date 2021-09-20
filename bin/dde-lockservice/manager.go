@@ -27,8 +27,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/godbus/dbus"
 	"github.com/msteinert/pam"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 )
 
@@ -41,20 +41,14 @@ const (
 	Success
 )
 
+//go:generate dbusutil-gen em -type Manager
+
 type Manager struct {
 	service       *dbusutil.Service
 	authLocker    sync.Mutex
 	authUserTable map[string]chan string // 'pid+user': 'password'
 
-	methods *struct {
-		CurrentUser      func() `out:"username"`
-		IsLiveCD         func() `in:"username" out:"result"`
-		SwitchToUser     func() `in:"username"`
-		AuthenticateUser func() `in:"username"`
-		UnlockCheck      func() `in:"username,password"`
-	}
-
-	signals *struct {
+	signals *struct { //nolint
 		Event struct {
 			eventType uint32
 			pid       uint32
@@ -119,7 +113,7 @@ func newManager(service *dbusutil.Service) *Manager {
 	return &m
 }
 
-func (m *Manager) CurrentUser() (string, *dbus.Error) {
+func (m *Manager) CurrentUser() (username string, busErr *dbus.Error) {
 	username, err := getGreeterUser(greeterUserConfig)
 	if err != nil {
 		return "", dbusutil.ToError(err)
@@ -127,7 +121,7 @@ func (m *Manager) CurrentUser() (string, *dbus.Error) {
 	return username, nil
 }
 
-func (m *Manager) IsLiveCD(username string) (bool, *dbus.Error) {
+func (m *Manager) IsLiveCD(username string) (result bool, busErr *dbus.Error) {
 	return isInLiveCD(username), nil
 }
 
@@ -142,7 +136,10 @@ func (m *Manager) SwitchToUser(username string) *dbus.Error {
 		return dbusutil.ToError(err)
 	}
 	if current != "" {
-		m.service.Emit(m, "UserChanged", username)
+		err = m.service.Emit(m, "UserChanged", username)
+		if err != nil {
+			return dbusutil.ToError(err)
+		}
 	}
 	return nil
 }
@@ -238,19 +235,18 @@ func (m *Manager) doAuthenticate(username, password string, pid uint32) {
 				return "", fmt.Errorf("no passwd channel found for %s", username)
 			}
 			log.Println("Join select:", id)
-			select {
-			case tmp, ok := <-v:
-				if !ok {
-					log.Println("Invalid select channel")
-					return "", nil
-				}
 
-				m.authLocker.Lock()
-				delete(m.authUserTable, id)
-				close(v)
-				m.authLocker.Unlock()
-				return tmp, nil
+			tmp, ok := <-v
+			if !ok {
+				log.Println("Invalid select channel")
+				return "", nil
 			}
+
+			m.authLocker.Lock()
+			delete(m.authUserTable, id)
+			close(v)
+			m.authLocker.Unlock()
+			return tmp, nil
 		case pam.ErrorMsg:
 			if msg != "" {
 				log.Println("ShowError:", msg)

@@ -1,23 +1,36 @@
 package bluetooth
 
 import (
+	"errors"
 	"fmt"
+	"time"
 
-	dbus "pkg.deepin.io/lib/dbus1"
+	dbus "github.com/godbus/dbus"
 	"pkg.deepin.io/lib/dbusutil"
 )
 
-func (b *Bluetooth) ConnectDevice(dpath dbus.ObjectPath) *dbus.Error {
-	d, err := b.getDevice(dpath)
+func (b *Bluetooth) ConnectDevice(device dbus.ObjectPath, apath dbus.ObjectPath) *dbus.Error {
+	d, err := b.getDevice(device)
+	b.prepareToConnectedLock.Lock()
+	b.prepareToConnectedDevice = device
+	b.prepareToConnectedLock.Unlock()
 	if err != nil {
-		return dbusutil.ToError(err)
+		logger.Debug("getDevice failed:", err)
+		a, err := b.getAdapter(apath)
+		if err != nil {
+			logger.Debug("getAdapter failed:", err)
+		}
+		a.startDiscovery()
+		a.scanReadyToConnectDeviceTimeoutFlag = true
+		a.scanReadyToConnectDeviceTimeout.Reset(defaultFindDeviceTimeout)
+	} else {
+		go d.Connect()
 	}
-	go d.Connect()
 	return nil
 }
 
-func (b *Bluetooth) DisconnectDevice(dpath dbus.ObjectPath) *dbus.Error {
-	d, err := b.getDevice(dpath)
+func (b *Bluetooth) DisconnectDevice(device dbus.ObjectPath) *dbus.Error {
+	d, err := b.getDevice(device)
 	if err != nil {
 		return dbusutil.ToError(err)
 	}
@@ -25,35 +38,39 @@ func (b *Bluetooth) DisconnectDevice(dpath dbus.ObjectPath) *dbus.Error {
 	return nil
 }
 
-func (b *Bluetooth) RemoveDevice(apath, dpath dbus.ObjectPath) *dbus.Error {
-	a, err := b.getAdapter(apath)
+func (b *Bluetooth) RemoveDevice(adapter, device dbus.ObjectPath) *dbus.Error {
+	a, err := b.getAdapter(adapter)
 	if err != nil {
 		return dbusutil.ToError(err)
 	}
 	// find remove device from map
-	removeDev, err := b.getDevice(dpath)
+	removeDev, err := b.getDevice(device)
 	if err != nil {
 		logger.Warningf("failed to get device, err: %v", err)
 		return dbusutil.ToError(err)
 	}
-	// check if device connect state is connecting or disconnecting, if is, mark remove state as true
+	// check if device connect state is connecting, if is, mark remove state as true
 	deviceState := removeDev.getState()
-	if deviceState == deviceStateDoing {
+	if deviceState == deviceStateConnecting {
 		removeDev.markNeedRemove(true)
 	} else {
 		// connection finish, allow to remove device directly
-		err = a.core.RemoveDevice(0, dpath)
+		err = a.core.Adapter().RemoveDevice(0, device)
 		if err != nil {
 			logger.Warningf("failed to remove device %q from adapter %q: %v",
-				dpath, apath, err)
+				device, adapter, err)
 			return dbusutil.ToError(err)
+		}
+		// 扫描结束后删除备份数据中的设备
+		if a.discoveringTimeoutFlag {
+			b.removeBackupDevice(device)
 		}
 	}
 	return nil
 }
 
-func (b *Bluetooth) SetDeviceAlias(dpath dbus.ObjectPath, alias string) *dbus.Error {
-	d, err := b.getDevice(dpath)
+func (b *Bluetooth) SetDeviceAlias(device dbus.ObjectPath, alias string) *dbus.Error {
+	d, err := b.getDevice(device)
 	if err != nil {
 		return dbusutil.ToError(err)
 	}
@@ -64,8 +81,8 @@ func (b *Bluetooth) SetDeviceAlias(dpath dbus.ObjectPath, alias string) *dbus.Er
 	return nil
 }
 
-func (b *Bluetooth) SetDeviceTrusted(dpath dbus.ObjectPath, trusted bool) *dbus.Error {
-	d, err := b.getDevice(dpath)
+func (b *Bluetooth) SetDeviceTrusted(device dbus.ObjectPath, trusted bool) *dbus.Error {
+	d, err := b.getDevice(device)
 	if err != nil {
 		return dbusutil.ToError(err)
 	}
@@ -77,15 +94,25 @@ func (b *Bluetooth) SetDeviceTrusted(dpath dbus.ObjectPath, trusted bool) *dbus.
 }
 
 // GetDevices return all device objects that marshaled by json.
-func (b *Bluetooth) GetDevices(apath dbus.ObjectPath) (devicesJSON string, err *dbus.Error) {
-	b.devicesLock.Lock()
-	devices := b.devices[apath]
-	var result []*device
-	for _, device := range devices {
-		result = append(result, device)
+func (b *Bluetooth) GetDevices(adapter dbus.ObjectPath) (devicesJSON string, err *dbus.Error) {
+	if a, ok := b.adapters[adapter]; ok {
+		b.devicesLock.Lock()
+		b.backupDeviceLock.Lock()
+		if a.discoveringTimeoutFlag { //蓝牙设备被清除，发送备份的蓝牙设备列表
+			//更新updateBackupDevices,防止设备断开/连接时数据错误
+			b.updateBackupDevices(adapter)
+			devices := b.backupDevices[adapter]
+			devicesJSON = marshalJSON(devices)
+
+		} else {
+			var result []*device
+			devices := b.devices[adapter]
+			result = append(result, devices...)
+			devicesJSON = marshalJSON(result)
+		}
+		b.devicesLock.Unlock()
+		b.backupDeviceLock.Unlock()
 	}
-	devicesJSON = marshalJSON(result)
-	b.devicesLock.Unlock()
 	return
 }
 
@@ -101,8 +128,8 @@ func (b *Bluetooth) GetAdapters() (adaptersJSON string, err *dbus.Error) {
 	return
 }
 
-func (b *Bluetooth) RequestDiscovery(apath dbus.ObjectPath) *dbus.Error {
-	a, err := b.getAdapter(apath)
+func (b *Bluetooth) RequestDiscovery(adapter dbus.ObjectPath) *dbus.Error {
+	a, err := b.getAdapter(adapter)
 	if err != nil {
 		return dbusutil.ToError(err)
 	}
@@ -112,7 +139,7 @@ func (b *Bluetooth) RequestDiscovery(apath dbus.ObjectPath) *dbus.Error {
 		return dbusutil.ToError(err)
 	}
 
-	discovering, err := a.core.Discovering().Get(0)
+	discovering, err := a.core.Adapter().Discovering().Get(0)
 	if err != nil {
 		return dbusutil.ToError(err)
 	}
@@ -122,66 +149,73 @@ func (b *Bluetooth) RequestDiscovery(apath dbus.ObjectPath) *dbus.Error {
 		return nil
 	}
 
-	err = a.core.StartDiscovery(0)
-	if err != nil {
-		logger.Warningf("failed to start %s discovery %v:", a, err)
-	} else {
-		// start discovering success, reset discovering timer
-		logger.Debug("reset timer for stop scan")
-		a.discoveringTimeout.Reset(defaultDiscoveringTimeout)
-	}
+	a.startDiscovery()
 
 	return nil
 }
 
-func (b *Bluetooth) SetAdapterPowered(apath dbus.ObjectPath,
+// SendFiles 用来发送文件给蓝牙设备，仅支持发送给已连接设备
+func (b *Bluetooth) SendFiles(devAddress string, files []string) (sessionPath dbus.ObjectPath, busErr *dbus.Error) {
+	if len(files) == 0 {
+		return "", dbusutil.ToError(errors.New("files is empty"))
+	}
+	// 检查设备是否已经连接
+	dev := b.getConnectedDeviceByAddress(devAddress)
+	if dev == nil {
+		logger.Debug("device is nil", dev)
+		return "", dbusutil.ToError(errors.New("device not connected"))
+	}
+
+	sessionPath, err := b.sendFiles(dev, files)
+	return sessionPath, dbusutil.ToError(err)
+}
+
+// CancelTransferSession 用来取消发送的会话，将会终止会话中所有的传送任务
+func (b *Bluetooth) CancelTransferSession(sessionPath dbus.ObjectPath) *dbus.Error {
+	//添加延时，确保sessionPath被remove，防止死锁
+	time.Sleep(500 * time.Millisecond)
+	b.sessionCancelChMapMu.Lock()
+	defer b.sessionCancelChMapMu.Unlock()
+
+	cancelCh, ok := b.sessionCancelChMap[sessionPath]
+	if !ok {
+		return dbusutil.ToError(errors.New("session not exists"))
+	}
+
+	cancelCh <- struct{}{}
+
+	return nil
+}
+
+func (b *Bluetooth) SetAdapterPowered(adapter dbus.ObjectPath,
 	powered bool) *dbus.Error {
 
-	logger.Debug("SetAdapterPowered", apath, powered)
+	logger.Debug("SetAdapterPowered", adapter, powered)
 
-	a, err := b.getAdapter(apath)
+	a, err := b.getAdapter(adapter)
 	if err != nil {
 		return dbusutil.ToError(err)
 	}
+	//Not scan timeout
+	a.discoveringTimeoutFlag = false
 
-	a.Powered = powered
-	a.notifyPropertiesChanged()
-
-	err = a.core.Powered().Set(0, powered)
+	err = a.core.Adapter().Powered().Set(0, powered)
 	if err != nil {
 		logger.Warningf("failed to set %s powered: %v", a, err)
 		return dbusutil.ToError(err)
 	}
-
-	// save the powered state
-	b.config.setAdapterConfigPowered(a.address, powered)
-
-	if powered {
-		err := a.core.Discoverable().Set(0, b.config.Discoverable)
-		if err != nil {
-			logger.Warningf("failed to set discoverable for %s: %v", a, err)
-		}
-		err = a.core.StartDiscovery(0)
-		if err != nil {
-			logger.Warningf("failed to start discovery for %s: %v", a, err)
-		} else {
-			logger.Debug("reset timer for stop scan")
-			// start discovering success, reset discovering timer
-			a.discoveringTimeout.Reset(defaultDiscoveringTimeout)
-		}
-		go b.tryConnectPairedDevices()
-	}
+	globalBluetooth.config.setAdapterConfigPowered(a.address, powered)
 
 	return nil
 }
 
-func (b *Bluetooth) SetAdapterAlias(apath dbus.ObjectPath, alias string) *dbus.Error {
-	a, err := b.getAdapter(apath)
+func (b *Bluetooth) SetAdapterAlias(adapter dbus.ObjectPath, alias string) *dbus.Error {
+	a, err := b.getAdapter(adapter)
 	if err != nil {
 		return dbusutil.ToError(err)
 	}
 
-	err = a.core.Alias().Set(0, alias)
+	err = a.core.Adapter().Alias().Set(0, alias)
 	if err != nil {
 		logger.Warningf("failed to set %s alias: %v", a, err)
 		return dbusutil.ToError(err)
@@ -190,11 +224,11 @@ func (b *Bluetooth) SetAdapterAlias(apath dbus.ObjectPath, alias string) *dbus.E
 	return nil
 }
 
-func (b *Bluetooth) SetAdapterDiscoverable(apath dbus.ObjectPath,
+func (b *Bluetooth) SetAdapterDiscoverable(adapter dbus.ObjectPath,
 	discoverable bool) *dbus.Error {
-	logger.Debug("SetAdapterDiscoverable", apath, discoverable)
+	logger.Debug("SetAdapterDiscoverable", adapter, discoverable)
 
-	a, err := b.getAdapter(apath)
+	a, err := b.getAdapter(adapter)
 	if err != nil {
 		return dbusutil.ToError(err)
 	}
@@ -204,7 +238,7 @@ func (b *Bluetooth) SetAdapterDiscoverable(apath dbus.ObjectPath,
 		return dbusutil.ToError(err)
 	}
 
-	err = a.core.Discoverable().Set(0, discoverable)
+	err = a.core.Adapter().Discoverable().Set(0, discoverable)
 	if err != nil {
 		logger.Warningf("failed to set %s discoverable: %v", a, err)
 		return dbusutil.ToError(err)
@@ -213,11 +247,11 @@ func (b *Bluetooth) SetAdapterDiscoverable(apath dbus.ObjectPath,
 	return nil
 }
 
-func (b *Bluetooth) SetAdapterDiscovering(apath dbus.ObjectPath,
+func (b *Bluetooth) SetAdapterDiscovering(adapter dbus.ObjectPath,
 	discovering bool) *dbus.Error {
-	logger.Debug("SetAdapterDiscovering", apath, discovering)
+	logger.Debug("SetAdapterDiscovering", adapter, discovering)
 
-	a, err := b.getAdapter(apath)
+	a, err := b.getAdapter(adapter)
 	if err != nil {
 		return dbusutil.ToError(err)
 	}
@@ -228,17 +262,9 @@ func (b *Bluetooth) SetAdapterDiscovering(apath dbus.ObjectPath,
 	}
 
 	if discovering {
-		err = a.core.StartDiscovery(0)
-		if err != nil {
-			logger.Warningf("failed to start discovery for %s: %v", a, err)
-			return dbusutil.ToError(err)
-		} else {
-			logger.Debug("reset timer for stop scan")
-			// start discovering success, reset discovering timer
-			a.discoveringTimeout.Reset(defaultDiscoveringTimeout)
-		}
+		a.startDiscovery()
 	} else {
-		err = a.core.StopDiscovery(0)
+		err = a.core.Adapter().StopDiscovery(0)
 		if err != nil {
 			logger.Warningf("failed to stop discovery for %s: %v", a, err)
 			return dbusutil.ToError(err)
@@ -248,16 +274,16 @@ func (b *Bluetooth) SetAdapterDiscovering(apath dbus.ObjectPath,
 	return nil
 }
 
-func (b *Bluetooth) SetAdapterDiscoverableTimeout(apath dbus.ObjectPath,
+func (b *Bluetooth) SetAdapterDiscoverableTimeout(adapter dbus.ObjectPath,
 	discoverableTimeout uint32) *dbus.Error {
-	logger.Debug("SetAdapterDiscoverableTimeout", apath, discoverableTimeout)
+	logger.Debug("SetAdapterDiscoverableTimeout", adapter, discoverableTimeout)
 
-	a, err := b.getAdapter(apath)
+	a, err := b.getAdapter(adapter)
 	if err != nil {
 		return dbusutil.ToError(err)
 	}
 
-	err = a.core.DiscoverableTimeout().Set(0, discoverableTimeout)
+	err = a.core.Adapter().DiscoverableTimeout().Set(0, discoverableTimeout)
 	if err != nil {
 		logger.Warningf("failed to set %s discoverableTimeout: %v", a, err)
 		return dbusutil.ToError(err)
@@ -267,31 +293,31 @@ func (b *Bluetooth) SetAdapterDiscoverableTimeout(apath dbus.ObjectPath,
 }
 
 //Confirm should call when you receive RequestConfirmation signal
-func (b *Bluetooth) Confirm(devPath dbus.ObjectPath, accept bool) *dbus.Error {
-	logger.Infof("Confirm %q %v", devPath, accept)
-	err := b.feed(devPath, accept, "")
+func (b *Bluetooth) Confirm(device dbus.ObjectPath, accept bool) *dbus.Error {
+	logger.Infof("Confirm %q %v", device, accept)
+	err := b.feed(device, accept, "")
 	return dbusutil.ToError(err)
 }
 
 //FeedPinCode should call when you receive RequestPinCode signal, notice that accept must true
 //if you accept connect request. If accept is false, pinCode will be ignored.
-func (b *Bluetooth) FeedPinCode(devPath dbus.ObjectPath, accept bool, pinCode string) *dbus.Error {
-	logger.Infof("FeedPinCode %q %v %q", devPath, accept, pinCode)
-	err := b.feed(devPath, accept, pinCode)
+func (b *Bluetooth) FeedPinCode(device dbus.ObjectPath, accept bool, pinCode string) *dbus.Error {
+	logger.Infof("FeedPinCode %q %v %q", device, accept, pinCode)
+	err := b.feed(device, accept, pinCode)
 	return dbusutil.ToError(err)
 }
 
 //FeedPasskey should call when you receive RequestPasskey signal, notice that accept must true
 //if you accept connect request. If accept is false, passkey will be ignored.
 //passkey must be range in 0~999999.
-func (b *Bluetooth) FeedPasskey(devPath dbus.ObjectPath, accept bool, passkey uint32) *dbus.Error {
-	logger.Infof("FeedPasskey %q %v %d", devPath, accept, passkey)
-	err := b.feed(devPath, accept, fmt.Sprintf("%06d", passkey))
+func (b *Bluetooth) FeedPasskey(device dbus.ObjectPath, accept bool, passkey uint32) *dbus.Error {
+	logger.Infof("FeedPasskey %q %v %d", device, accept, passkey)
+	err := b.feed(device, accept, fmt.Sprintf("%06d", passkey))
 	return dbusutil.ToError(err)
 }
 
-func (b *Bluetooth) DebugInfo() (string, *dbus.Error) {
-	info := fmt.Sprintf("adapters: %s\ndevices: %s", marshalJSON(b.adapters), marshalJSON(b.devices))
+func (b *Bluetooth) DebugInfo() (info string, busErr *dbus.Error) {
+	info = fmt.Sprintf("adapters: %s\ndevices: %s", marshalJSON(b.adapters), marshalJSON(b.devices))
 	return info, nil
 }
 
@@ -311,7 +337,10 @@ func (b *Bluetooth) ClearUnpairedDevice() *dbus.Error {
 	b.devicesLock.Unlock()
 
 	for _, d := range removeDevices {
-		b.RemoveDevice(d.AdapterPath, d.Path)
+		err := b.RemoveDevice(d.AdapterPath, d.Path)
+		if err != nil {
+			logger.Warning(err)
+		}
 	}
 	return nil
 }

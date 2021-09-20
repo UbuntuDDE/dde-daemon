@@ -23,10 +23,9 @@ import (
 	"fmt"
 	"time"
 
+	dbus "github.com/godbus/dbus"
 	sys_network "github.com/linuxdeepin/go-dbus-factory/com.deepin.system.network"
-	power "github.com/linuxdeepin/go-dbus-factory/com.deepin.system.power"
 	. "pkg.deepin.io/dde/daemon/keybinding/shortcuts"
-	dbus "pkg.deepin.io/lib/dbus1"
 )
 
 func (m *Manager) shouldShowCapsLockOSD() bool {
@@ -39,6 +38,19 @@ func (m *Manager) initHandlers() {
 
 	m.handlers[ActionTypeNonOp] = func(ev *KeyEvent) {
 		logger.Debug("non-Op do nothing")
+	}
+
+	m.handlers[ActionTypeCallback] = func(ev *KeyEvent) {
+		action := ev.Shortcut.GetAction()
+		fn, ok := action.Arg.(func(ev *KeyEvent))
+		if !ok {
+			logger.Warning(ErrTypeAssertionFail)
+			return
+		}
+
+		if fn != nil {
+			go fn(ev)
+		}
 	}
 
 	m.handlers[ActionTypeExecCmd] = func(ev *KeyEvent) {
@@ -178,80 +190,21 @@ func (m *Manager) initHandlers() {
 		}
 	}
 
-	m.handlers[ActionTypeSystemShutdown] = func(ev *KeyEvent) { // 电源键按下的handler
-		var powerPressAction int32
-
-		systemBus, _ := dbus.SystemBus()
-		systemPower := power.NewPower(systemBus)
-		onBattery, err := systemPower.OnBattery().Get(0)
-		if err != nil {
-			logger.Error(err)
-		}
-		if onBattery {
-			powerPressAction = m.gsPower.GetEnum("battery-press-power-button")
-		} else {
-			powerPressAction = m.gsPower.GetEnum("line-power-press-power-button")
-		}
-		switch powerPressAction {
-		case powerActionShutdown:
-			m.systemShutdown()
-		case powerActionSuspend:
-			systemSuspend()
-		case powerActionHibernate:
-			m.systemHibernate()
-		case powerActionTurnOffScreen:
-			m.systemTurnOffScreen()
-		case powerActionShowUI:
-			cmd := "dde-shutdown"
-			go func() {
-				err := m.execCmd(cmd, false)
-				if err != nil {
-					logger.Warning("execCmd error:", err)
-				}
-			}()
-		}
-	}
-
 	m.handlers[ActionTypeSystemSuspend] = func(ev *KeyEvent) {
-		systemSuspend()
+		m.systemSuspendByFront()
 	}
 
 	m.handlers[ActionTypeSystemLogOff] = func(ev *KeyEvent) {
-		systemLogout()
+		m.systemLogout()
 	}
 
 	m.handlers[ActionTypeSystemAway] = func(ev *KeyEvent) {
-		systemAway()
+		m.systemAway()
 	}
 
 	// handle Switch Kbd Layout
 	m.handlers[ActionTypeSwitchKbdLayout] = func(ev *KeyEvent) {
-		logger.Debug("Switch Kbd Layout state", m.switchKbdLayoutState)
-		flags := m.ShortcutSwitchLayout.Get()
-		action := ev.Shortcut.GetAction()
-		arg, ok := action.Arg.(uint32)
-		if !ok {
-			logger.Warning(ErrTypeAssertionFail)
-			return
-		}
-
-		if arg&flags == 0 {
-			return
-		}
-
-		switch m.switchKbdLayoutState {
-		case SKLStateNone:
-			m.switchKbdLayoutState = SKLStateWait
-			go m.sklWait()
-
-		case SKLStateWait:
-			m.switchKbdLayoutState = SKLStateOSDShown
-			m.terminateSKLWait()
-			showOSD("SwitchLayout")
-
-		case SKLStateOSDShown:
-			showOSD("SwitchLayout")
-		}
+		logger.Debug("Switch Kbd Layout shortcut was disbaled by TASK-67900")
 	}
 
 	m.handlers[ActionTypeShowControlCenter] = func(ev *KeyEvent) {

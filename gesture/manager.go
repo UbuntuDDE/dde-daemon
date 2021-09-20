@@ -4,45 +4,56 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 
-	"pkg.deepin.io/gir/gio-2.0"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.daemon"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.gesture"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.wm"
-	"pkg.deepin.io/lib/dbus1"
+	"github.com/godbus/dbus"
+	daemon "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.daemon"
+	display "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.display"
+	gesture "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.gesture"
+	clipboard "github.com/linuxdeepin/go-dbus-factory/com.deepin.dde.clipboard"
+	dock "github.com/linuxdeepin/go-dbus-factory/com.deepin.dde.daemon.dock"
+	notification "github.com/linuxdeepin/go-dbus-factory/com.deepin.dde.notification"
+	sessionmanager "github.com/linuxdeepin/go-dbus-factory/com.deepin.sessionmanager"
+	wm "github.com/linuxdeepin/go-dbus-factory/com.deepin.wm"
+	gio "pkg.deepin.io/gir/gio-2.0"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/proxy"
 	"pkg.deepin.io/lib/gsettings"
 	dutils "pkg.deepin.io/lib/utils"
 )
 
+//go:generate dbusutil-gen em -type Manager
+
 const (
-	tsSchemaID           = "com.deepin.dde.touchscreen"
-	tsSchemaKeyLongPress = "longpress-duration"
-	tsSchemaKeyBlacklist = "longpress-blacklist"
+	tsSchemaID              = "com.deepin.dde.touchscreen"
+	tsSchemaKeyLongPress    = "longpress-duration"
+	tsSchemaKeyShortPress   = "shortpress-duration"
+	tsSchemaKeyEdgeMoveStop = "edgemovestop-duration"
+	tsSchemaKeyBlacklist    = "longpress-blacklist"
 )
 
 type Manager struct {
-	wm            *wm.Wm
-	sysDaemon     *daemon.Daemon
-	systemSigLoop *dbusutil.SignalLoop
-	mu            sync.RWMutex
-	userFile      string
-	builtinSets   map[string]func() error
-	gesture       *gesture.Gesture
-	setting       *gio.Settings
-	tsSetting     *gio.Settings
-	enabled       bool
-	Infos         gestureInfos
-
-	methods *struct {
-		SetLongPressDuration func() `in:"duration"`
-		GetLongPressDuration func() `out:"duration"`
-	}
+	wm             wm.Wm
+	sysDaemon      daemon.Daemon
+	systemSigLoop  *dbusutil.SignalLoop
+	mu             sync.RWMutex
+	userFile       string
+	builtinSets    map[string]func() error
+	gesture        gesture.Gesture
+	dock           dock.Dock
+	display        display.Display
+	setting        *gio.Settings
+	tsSetting      *gio.Settings
+	enabled        bool
+	Infos          gestureInfos
+	sessionmanager sessionmanager.SessionManager
+	clipboard      clipboard.Clipboard
+	notification   notification.Notification
 }
 
 func newManager() (*Manager, error) {
@@ -67,18 +78,22 @@ func newManager() (*Manager, error) {
 	}
 	// for touch long press
 	infos = append(infos, &gestureInfo{
-		Name:      "touch right button",
-		Direction: "down",
-		Fingers:   0,
+		Event: EventInfo{
+			Name:      "touch right button",
+			Direction: "down",
+			Fingers:   0,
+		},
 		Action: ActionInfo{
 			Type:   ActionTypeCommandline,
 			Action: "xdotool mousedown 3",
 		},
 	})
 	infos = append(infos, &gestureInfo{
-		Name:      "touch right button",
-		Direction: "up",
-		Fingers:   0,
+		Event: EventInfo{
+			Name:      "touch right button",
+			Direction: "up",
+			Fingers:   0,
+		},
 		Action: ActionInfo{
 			Type:   ActionTypeCommandline,
 			Action: "xdotool mouseup 3",
@@ -96,13 +111,18 @@ func newManager() (*Manager, error) {
 	}
 
 	m := &Manager{
-		userFile:  configUserPath,
-		Infos:     infos,
-		setting:   setting,
-		tsSetting: tsSetting,
-		enabled:   setting.GetBoolean(gsKeyEnabled),
-		wm:        wm.NewWm(sessionConn),
-		sysDaemon: daemon.NewDaemon(systemConn),
+		userFile:       configUserPath,
+		Infos:          infos,
+		setting:        setting,
+		tsSetting:      tsSetting,
+		enabled:        setting.GetBoolean(gsKeyEnabled),
+		wm:             wm.NewWm(sessionConn),
+		dock:           dock.NewDock(sessionConn),
+		display:        display.NewDisplay(sessionConn),
+		sysDaemon:      daemon.NewDaemon(systemConn),
+		sessionmanager: sessionmanager.NewSessionManager(sessionConn),
+		clipboard:      clipboard.NewClipboard(sessionConn),
+		notification:   notification.NewNotification(sessionConn),
 	}
 
 	m.gesture = gesture.NewGesture(systemConn)
@@ -118,54 +138,163 @@ func (m *Manager) destroy() {
 
 func (m *Manager) init() {
 	m.initBuiltinSets()
-	m.sysDaemon.SetLongPressDuration(0, uint32(m.tsSetting.GetInt(tsSchemaKeyLongPress)))
+	err := m.sysDaemon.SetLongPressDuration(0, uint32(m.tsSetting.GetInt(tsSchemaKeyLongPress)))
+	if err != nil {
+		logger.Warning("call SetLongPressDuration failed:", err)
+	}
+	err = m.gesture.SetShortPressDuration(0, uint32(m.tsSetting.GetInt(tsSchemaKeyShortPress)))
+	if err != nil {
+		logger.Warning("call SetShortPressDuration failed:", err)
+	}
+	err = m.gesture.SetEdgeMoveStopDuration(0, uint32(m.tsSetting.GetInt(tsSchemaKeyEdgeMoveStop)))
+	if err != nil {
+		logger.Warning("call SetEdgeMoveStopDuration failed:", err)
+	}
+
 	m.systemSigLoop.Start()
 	m.gesture.InitSignalExt(m.systemSigLoop, true)
-	m.gesture.ConnectEvent(func(name string, direction string, fingers int32) {
-		logger.Debug("[Event] received:", name, direction, fingers)
-		err := m.Exec(name, direction, fingers)
+	_, err = m.gesture.ConnectEvent(func(name string, direction string, fingers int32) {
+		should, err := m.shouldHandleEvent()
+		if err != nil {
+			logger.Error("shouldHandleEvent failed:", err)
+			return
+		}
+		if !should {
+			return
+		}
+
+		err = m.Exec(EventInfo{
+			Name:      name,
+			Direction: direction,
+			Fingers:   fingers,
+		})
 		if err != nil {
 			logger.Error("Exec failed:", err)
 		}
 	})
+	if err != nil {
+		logger.Error("connect gesture event failed:", err)
+	}
+
+	_, err = m.gesture.ConnectTouchEdgeMoveStopLeave(func(direction string, scaleX float64, scaleY float64, duration int32) {
+		should, err := m.shouldHandleEvent()
+		if err != nil {
+			logger.Error("shouldHandleEvent failed:", err)
+			return
+		}
+		if !should {
+			return
+		}
+
+		context, pointFn, err := m.getTouchScreenRotationContext()
+		if err != nil {
+			logger.Error("getTouchScreenRotationContext failed:", err)
+		}
+		p := &point{X: scaleX, Y: scaleY}
+		pointFn(p)
+
+		err = m.handleTouchEdgeMoveStopLeave(context, direction, p, duration)
+		if err != nil {
+			logger.Error("handleTouchEdgeMoveStopLeave failed:", err)
+		}
+	})
+	if err != nil {
+		logger.Error("connect TouchEdgeMoveStopLeave failed:", err)
+	}
+
+	_, err = m.gesture.ConnectTouchEdgeEvent(func(direction string, scaleX float64, scaleY float64) {
+		should, err := m.shouldHandleEvent()
+		if err != nil {
+			logger.Error("shouldHandleEvent failed:", err)
+			return
+		}
+		if !should {
+			return
+		}
+		context, pointFn, err := m.getTouchScreenRotationContext()
+		if err != nil {
+			logger.Error("getTouchScreenRotationContext failed:", err)
+		}
+		p := &point{X: scaleX, Y: scaleY}
+		pointFn(p)
+		err = m.handleTouchEdgeEvent(context, direction, p)
+		if err != nil {
+			logger.Error("handleTouchEdgeEvent failed:", err)
+		}
+	})
+	if err != nil {
+		logger.Error("connect handleTouchEdgeEvent failed:", err)
+	}
+
+	_, err = m.gesture.ConnectTouchMovementEvent(func(direction string, fingers int32, startScaleX float64, startScaleY float64, endScaleX float64, endScaleY float64) {
+		should, err := m.shouldHandleEvent()
+		if err != nil {
+			logger.Error("shouldHandleEvent failed:", err)
+			return
+		}
+		if !should {
+			return
+		}
+
+		context, pointFn, err := m.getTouchScreenRotationContext()
+		if err != nil {
+			logger.Error("getTouchScreenRotationContext failed:", err)
+		}
+
+		startP := &point{X: startScaleX, Y: startScaleY}
+		endP := &point{X: endScaleX, Y: endScaleY}
+		pointFn(startP)
+		pointFn(endP)
+
+		err = m.handleTouchMovementEvent(context, direction, fingers, startP, endP)
+		if err != nil {
+			logger.Error("handleTouchMovementEvent failed:", err)
+		}
+	})
+	if err != nil {
+		logger.Error("connect handleTouchMovementEvent failed:", err)
+	}
 	m.listenGSettingsChanged()
 }
 
-func (m *Manager) Exec(name, direction string, fingers int32) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+func (m *Manager) shouldIgnoreGesture(info *gestureInfo) bool {
+	// allow right button up when kbd grabbed
+	if (info.Event.Name != "touch right button" || info.Event.Direction != "up") && isKbdAlreadyGrabbed() {
+		logger.Debug("another process grabbed keyboard, not exec action")
+		return true
+	}
 
-	if !m.enabled || !isSessionActive() {
-		logger.Debug("Gesture had been disabled or session inactive")
+	// TODO(jouyouyun): improve touch right button handler
+	if info.Event.Name == "touch right button" {
+		// filter google chrome
+		if isInWindowBlacklist(getCurrentActionWindowCmd(), m.tsSetting.GetStrv(tsSchemaKeyBlacklist)) {
+			logger.Debug("the current active window in blacklist")
+			return true
+		}
+	} else if strings.HasPrefix(info.Event.Name, "touch") {
+		return true
+	}
+
+	return false
+}
+
+func (m *Manager) Exec(evInfo EventInfo) error {
+	info := m.Infos.Get(evInfo)
+	if info == nil {
+		return fmt.Errorf("not found event info: %s", evInfo.toString())
+	}
+
+	logger.Debugf("[Exec]: event info:%s  action info:%s", info.Event.toString(), info.Action.toString())
+	if m.shouldIgnoreGesture(info) {
 		return nil
 	}
 
-	info := m.Infos.Get(name, direction, fingers)
-	if info == nil {
-		return fmt.Errorf("not found gesture info for: %s, %s, %d", name, direction, fingers)
-	}
-
-	logger.Debug("[Exec] action info:", info.Name, info.Direction, info.Fingers,
-		info.Action.Type, info.Action.Action)
-	// allow right button up when kbd grabbed
-	if (info.Name != "touch right button" || info.Direction != "up") && isKbdAlreadyGrabbed() {
-		return fmt.Errorf("another process grabbed keyboard, not exec action")
-	}
-	// TODO(jouyouyun): improve touch right button handler
-	if info.Name == "touch right button" {
-		// filter google chrome
-		if isInWindowBlacklist(getCurrentActionWindowCmd(), m.tsSetting.GetStrv(tsSchemaKeyBlacklist)) {
-			logger.Debug("The current active window in blacklist")
-			return nil
-		}
-	}
 	var cmd = info.Action.Action
 	switch info.Action.Type {
 	case ActionTypeCommandline:
 		break
 	case ActionTypeShortcut:
 		cmd = fmt.Sprintf("xdotool key %s", cmd)
-		break
 	case ActionTypeBuiltin:
 		return m.handleBuiltinAction(cmd)
 	default:
@@ -211,4 +340,285 @@ func (m *Manager) handleBuiltinAction(cmd string) error {
 
 func (*Manager) GetInterfaceName() string {
 	return dbusServiceIFC
+}
+
+type TouchScreensRotation uint16
+
+// counterclockwise
+const (
+	Normal       TouchScreensRotation = 1
+	Rotation_90  TouchScreensRotation = 2
+	Rotation_180 TouchScreensRotation = 4
+	Rotation_270 TouchScreensRotation = 8
+)
+
+// 获取触摸屏的旋转
+func (m *Manager) getTouchScreenRotation() (display.Monitor, TouchScreensRotation) {
+	// 读取触屏列表，取第一个触屏（目前触摸手势事件中不包含所属屏幕，因此不支持多个触摸屏）
+	touchScreens, err := m.display.Touchscreens().Get(0)
+	if err != nil {
+		logger.Warning(err)
+	}
+
+	// 读取触摸屏映射
+	touchMap, err := m.display.TouchMap().Get(0)
+	if err != nil {
+		logger.Warning(err)
+	}
+
+	// 读取触摸屏的名字
+	var touchScreen string
+	if len(touchScreens) > 0 && len(touchMap) > 0 {
+		touchScreen = touchMap[touchScreens[0].Serial]
+	}
+
+	// 读取失败，把主屏当做触摸屏
+	if touchScreen == "" {
+		logger.Warning("failed to find the touch screen, assume the primary as the touch screen")
+		touchScreen, err = m.display.Primary().Get(0)
+		if err != nil {
+			logger.Warning(err)
+		}
+	}
+
+	// 遍历显示器，查找触摸屏的旋转角度
+	monitors, err := m.display.Monitors().Get(0)
+	if err != nil {
+		logger.Warning(err)
+	}
+	sessionBus, err := dbus.SessionBus()
+	if err != nil {
+		logger.Warning(err)
+		return nil, Normal
+	}
+	for _, path := range monitors {
+		monitor, err := display.NewMonitor(sessionBus, path)
+		if err != nil {
+			logger.Warning(err)
+			continue
+		}
+
+		name, err := monitor.Name().Get(0)
+		if err != nil {
+			logger.Warning(err)
+			continue
+		}
+
+		if name == touchScreen {
+			rotation, err := monitor.Rotation().Get(0)
+			if err != nil {
+				logger.Warning(err)
+				break
+			}
+			return monitor, TouchScreensRotation(rotation)
+		}
+	}
+
+	// 查找失败，当做没有旋转
+	return nil, Normal
+}
+
+// struct point represents a point on a touchScreen
+// X is a float64 in [0,1], which is the horizontal index
+// Y is a float64 in [0,1], which is the vertical index
+// left-top corner represents in struct point is{X:0,Y:0}
+type point struct {
+	X float64
+	Y float64
+}
+
+// struct touchEventContext is a struct try to handle the context of touchScreen Gesture after rotation
+// for example after Rotation_90 context.top is "left", and context.screenHeight is always the vertical height of screen
+// see func getTouchScreenRotationContext for details
+type touchEventContext struct {
+	top, bot, left, right     string
+	screenWidth, screenHeight uint16
+}
+
+// func getTouchScreenRotationContext return a context represents the current touchScreen's rotation, and a func to transform point
+func (m *Manager) getTouchScreenRotationContext() (context *touchEventContext, pointTransformFn func(*point), err error) {
+	monitor, rotation := m.getTouchScreenRotation()
+
+	var screenWidth, screenHeight uint16
+	if monitor == nil { // 如果获取失败则当作用户只有一个显示屏, 直接使用 x 的画布大小当作触摸屏大小
+		screenWidth, err = m.display.ScreenWidth().Get(0)
+		if err != nil {
+			logger.Error("get display.ScreenWidth failed:", err)
+			return
+		}
+		screenHeight, err = m.display.ScreenHeight().Get(0)
+		if err != nil {
+			logger.Error("get display.ScreenWidth failed:", err)
+			return
+		}
+	} else {
+		screenWidth, err = monitor.Width().Get(0)
+		if err != nil {
+			logger.Error("get monitor.Width failed:", err)
+			return
+		}
+		screenHeight, err = monitor.Height().Get(0)
+		if err != nil {
+			logger.Error("get monitor.Height failed:", err)
+			return
+		}
+	}
+
+	pointFn := func(p *point) {}
+	top, bot, left, right := "top", "bot", "left", "right"
+	switch rotation {
+	case Rotation_90:
+		top, bot, left, right = "left", "right", "bot", "top"
+		screenHeight, screenWidth = screenWidth, screenHeight
+		pointFn = func(p *point) {
+			p.X, p.Y = 1-p.Y, p.X
+		}
+	case Rotation_180:
+		top, bot, left, right = "bot", "top", "right", "left"
+		pointFn = func(p *point) {
+			p.X, p.Y = 1-p.X, 1-p.Y
+		}
+	case Rotation_270:
+		top, bot, left, right = "right", "left", "top", "bot"
+		screenHeight, screenWidth = screenWidth, screenHeight
+		pointFn = func(p *point) {
+			p.X, p.Y = p.Y, 1-p.X
+		}
+	}
+	context = &touchEventContext{
+		screenWidth:  screenWidth,
+		screenHeight: screenHeight,
+		top:          top,
+		bot:          bot,
+		left:         left,
+		right:        right,
+	}
+	pointTransformFn = pointFn
+	return
+}
+
+//param @edge: swipe to touchscreen edge
+// edge: 该手势来自屏幕的哪条边
+// p:    该手势的终点
+func (m *Manager) handleTouchEdgeMoveStopLeave(context *touchEventContext, edge string, p *point, duration int32) error {
+	logger.Debugf("handleTouchEdgeMoveStopLeave: context:%+v edge:%s p: %+v", *context, edge, *p)
+
+	if edge == context.bot {
+		position, err := m.dock.Position().Get(0)
+		if err != nil {
+			logger.Error("get dock.Position failed:", err)
+			return err
+		}
+
+		if position >= 0 {
+			rect, err := m.dock.FrontendWindowRect().Get(0)
+			if err != nil {
+				logger.Error("get dock.FrontendWindowRect failed:", err)
+				return err
+			}
+
+			var dockPly uint32 = 0
+			if position == positionTop || position == positionBottom {
+				dockPly = rect.Height
+			} else if position == positionRight || position == positionLeft {
+				dockPly = rect.Width
+			}
+
+			if (1-p.Y)*float64(context.screenHeight) > float64(dockPly) {
+				logger.Debug("show work space")
+				return m.handleBuiltinAction("ShowWorkspace")
+			}
+		}
+	}
+	return nil
+}
+
+// edge: 该手势来自屏幕的哪条边
+// p:    该手势的终点
+func (m *Manager) handleTouchEdgeEvent(context *touchEventContext, edge string, p *point) error {
+	logger.Debugf("handleTouchEdgeEvent: context:%+v edge:%s p:%+v", *context, edge, *p)
+	switch edge {
+	case context.left:
+		if p.X*float64(context.screenHeight) > 100 {
+			return m.clipboard.Show(0)
+		}
+	case context.right:
+		if (1-p.X)*float64(context.screenWidth) > 100 {
+			return m.notification.Show(0)
+		}
+	}
+	return nil
+}
+
+// direction: 该手势的方向
+// fingers:   手指的数量
+// startP:    该手势的起点
+// endP:      该手势的终点
+func (m *Manager) handleTouchMovementEvent(context *touchEventContext, direction string, fingers int32, startP *point, endP *point) error {
+	logger.Debugf("handleTouchMovementEvent: context:%+v direction:%s startP:%+v endP:%+v", *context, direction, *startP, *endP)
+
+	if fingers == 1 {
+		// sensitivity check
+		// TODO maybe write a function for this
+		sensitivityThreshold := 0.05
+
+		if math.Abs(startP.X-endP.X) < sensitivityThreshold {
+			logger.Debug("sensitivity check fail, gesture will not be triggered")
+			return nil
+		}
+
+		switch direction {
+		case context.left:
+			return m.clipboard.Hide(0)
+		case context.right:
+			return m.notification.Hide(0)
+		}
+	}
+
+	return nil
+}
+
+//touchpad double click down
+func (m *Manager) handleDbclickDown(fingers int32) error {
+	if fingers == 3 {
+		return m.wm.TouchToMove(0, 0, 0)
+	}
+	return nil
+}
+
+//touchpad swipe move
+func (m *Manager) handleSwipeMoving(fingers int32, accelX float64, accelY float64) error {
+	if fingers == 3 {
+		return m.wm.TouchToMove(0, int32(accelX), int32(accelY))
+	}
+	return nil
+}
+
+//touchpad swipe stop or interrupted
+func (m *Manager) handleSwipeStop(fingers int32) error {
+	if fingers == 3 {
+		return m.wm.ClearMoveStatus(0)
+	}
+	return nil
+}
+
+// 多用户存在，防止非当前用户响应触摸屏手势
+func (m *Manager) shouldHandleEvent() (bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if !m.enabled {
+		return false, nil
+	}
+
+	currentSessionPath, err := m.sessionmanager.CurrentSessionPath().Get(0)
+	if err != nil {
+		return false, fmt.Errorf("get login1 session path failed: %v", err)
+	}
+
+	if !isSessionActive(currentSessionPath) {
+		return false, nil
+	}
+
+	return true, nil
 }

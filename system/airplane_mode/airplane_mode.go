@@ -17,11 +17,11 @@ type Module struct {
 	*loader.ModuleBase
 }
 
-func (m Module) GetDependencies() []string {
+func (m *Module) GetDependencies() []string {
 	return nil
 }
 
-func (m Module) Start() error {
+func (m *Module) Start() error {
 	if m.m != nil {
 		return nil
 	}
@@ -40,7 +40,7 @@ func (m Module) Start() error {
 	return nil
 }
 
-func (m Module) Stop() error {
+func (m *Module) Stop() error {
 	return nil
 }
 

@@ -24,8 +24,8 @@ import (
 	"sync"
 	"time"
 
+	dbus "github.com/godbus/dbus"
 	bluez "github.com/linuxdeepin/go-dbus-factory/org.bluez"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/proxy"
 )
@@ -33,8 +33,13 @@ import (
 const (
 	deviceStateDisconnected = 0
 	// device state is connecting or disconnecting, mark them as device state doing
-	deviceStateDoing     = 1
-	deviceStateConnected = 2
+	deviceStateConnecting    = 1
+	deviceStateConnected     = 2
+	deviceStateDisconnecting = 3
+)
+
+const (
+	resourceUnavailable = "Resource temporarily unavailable"
 )
 
 type deviceState uint32
@@ -43,10 +48,12 @@ func (s deviceState) String() string {
 	switch s {
 	case deviceStateDisconnected:
 		return "Disconnected"
-	case deviceStateDoing:
-		return "doing"
+	case deviceStateConnecting:
+		return "Connecting"
 	case deviceStateConnected:
 		return "Connected"
+	case deviceStateDisconnecting:
+		return "Disconnecting"
 	default:
 		return fmt.Sprintf("Unknown(%d)", s)
 	}
@@ -57,7 +64,7 @@ var (
 )
 
 type device struct {
-	core    *bluez.Device
+	core    bluez.Device
 	adapter *adapter
 
 	Path        dbus.ObjectPath
@@ -80,14 +87,13 @@ type device struct {
 	connected         bool
 	connectedTime     time.Time
 	retryConnectCount int
-	connecting        bool
 	agentWorking      bool
+	needNotify        bool
 
 	connectPhase      connectPhase
 	disconnectPhase   disconnectPhase
 	disconnectChan    chan struct{}
 	mu                sync.Mutex
-	confirmation      chan bool
 	pairingFailedTime time.Time
 
 	// mark if pc or mobile request a connection
@@ -98,6 +104,28 @@ type device struct {
 	// to avoid this situation, remove device only allowed when connected or disconnected finished
 	needRemove bool
 	removeLock sync.Mutex
+}
+
+//设备的备份，扫描结束3分钟后保存设备
+type backupDevice struct {
+	Path        dbus.ObjectPath
+	AdapterPath dbus.ObjectPath
+
+	Alias            string
+	Trusted          bool
+	Paired           bool
+	State            deviceState
+	ServicesResolved bool
+	ConnectState     bool
+
+	// optional
+	UUIDs   []string
+	Name    string
+	Icon    string
+	RSSI    int16
+	Address string
+
+	connected bool
 }
 
 type connectPhase uint32
@@ -161,7 +189,8 @@ func (d *device) setConnectPhase(value connectPhase) {
 
 	d.updateState()
 	d.notifyDevicePropertiesChanged()
-	if d.Paired && d.State == deviceStateConnected && d.ConnectState {
+	if d.Paired && d.State == deviceStateConnected && d.ConnectState && d.needNotify {
+		d.needNotify = false
 		notifyConnected(d.Alias)
 	}
 }
@@ -210,7 +239,13 @@ func newDevice(systemSigLoop *dbusutil.SignalLoop, dpath dbus.ObjectPath) (d *de
 	d.ServicesResolved, _ = d.core.ServicesResolved().Get(0)
 	d.Icon, _ = d.core.Icon().Get(0)
 	d.RSSI, _ = d.core.RSSI().Get(0)
+	d.needNotify = true
 	d.updateState()
+	if d.Paired && d.connected {
+		d.ConnectState = true
+		//切換用户时添加设备到connectedDevices列表中
+		globalBluetooth.addConnectedDevice(d)
+	}
 	d.disconnectChan = make(chan struct{})
 	d.core.InitSignalExt(systemSigLoop, true)
 	d.connectProperties()
@@ -255,13 +290,16 @@ func (d *device) connectProperties() {
 		logger.Debugf("%s Connected: %v", d, connected)
 		d.connected = connected
 
-		needNotify := true
+		//音频设备主动发起连接时也断开之前的音频连接
+		if d.connected && d.Paired {
+			go d.audioA2DPWorkaround()
+		}
 
 		// check if device need to be removed, if is, remove device
 		needRemove := d.getAndResetNeedRemove()
 		if needRemove {
 			// start remove device
-			err := d.adapter.core.RemoveDevice(0, d.Path)
+			err := d.adapter.core.Adapter().RemoveDevice(0, d.Path)
 			if err != nil {
 				logger.Warningf("failed to remove device %q from adapter %q: %v",
 					d.adapter.Path, d.Path, err)
@@ -272,8 +310,20 @@ func (d *device) connectProperties() {
 		if connected {
 			d.ConnectState = true
 			d.connectedTime = time.Now()
+			globalBluetooth.config.setDeviceConfigConnected(d, true)
+			dev := globalBluetooth.getConnectedDeviceByAddress(d.Address)
+			if dev == nil {
+				globalBluetooth.addConnectedDevice(d)
+				logger.Debug("connectedDevices", globalBluetooth.connectedDevices)
+			}
 		} else {
+			//If the pairing is successful and connected, the signal will be sent when the device is disconnected
+			if d.Paired && d.ConnectState {
+				notifyDisconnected(d.Alias)
+			}
+			d.needNotify = true
 			d.ConnectState = false
+
 			// if disconnect success, remove device from map
 			globalBluetooth.removeConnectedDevice(d)
 			// when disconnected quickly after connecting, automatically try to connect
@@ -293,7 +343,6 @@ func (d *device) connectProperties() {
 			select {
 			case d.disconnectChan <- struct{}{}:
 				logger.Debugf("%s disconnectChan send done", d)
-				needNotify = false
 			default:
 			}
 		}
@@ -301,10 +350,9 @@ func (d *device) connectProperties() {
 		d.updateState()
 		d.notifyDevicePropertiesChanged()
 
-		if needNotify && d.Paired && d.State == deviceStateConnected && d.ConnectState {
+		if d.needNotify && d.Paired && d.State == deviceStateConnected && d.ConnectState {
 			d.notifyConnectedChanged()
 		}
-		return
 	})
 	if err != nil {
 		logger.Warning(err)
@@ -351,7 +399,21 @@ func (d *device) connectProperties() {
 			return
 		}
 		d.Paired = value
-		logger.Debugf("%s Paired: %v", d, value)
+		d.updateState() // Paired属性被修改，影响到下面使用的State和ConnectState
+		logger.Debugf("%s Paired: %v State: %v", d, value, d.State)
+
+		if d.Paired && d.connected && d.State == deviceStateConnected {
+			d.ConnectState = true
+			dev := globalBluetooth.getConnectedDeviceByAddress(d.Address)
+			if dev == nil {
+				globalBluetooth.addConnectedDevice(d)
+			}
+		}
+
+		if d.needNotify && d.Paired && d.State == deviceStateConnected && d.ConnectState {
+			notifyConnected(d.Alias)
+			d.needNotify = false
+		}
 		d.notifyDevicePropertiesChanged()
 	})
 
@@ -425,6 +487,7 @@ func (d *device) notifyConnectedChanged() {
 
 	if d.connected {
 		notifyConnected(d.Alias)
+		d.needNotify = false
 		//} else {
 		//	if time.Since(d.pairingFailedTime) < 2*time.Second {
 		//		return
@@ -445,17 +508,17 @@ func (d *device) getState() deviceState {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.agentWorking {
-		return deviceStateDoing
+		return deviceStateConnecting
 	}
 
 	if d.connectPhase != connectPhaseNone {
-		return deviceStateDoing
+		return deviceStateConnecting
 
 	} else if d.disconnectPhase != connectPhaseNone {
-		return deviceStateDoing
+		return deviceStateDisconnecting
 
 	} else {
-		if d.connected {
+		if d.connected && d.Paired {
 			return deviceStateConnected
 		} else {
 			return deviceStateDisconnected
@@ -464,7 +527,10 @@ func (d *device) getState() deviceState {
 }
 
 func (d *device) getAddress() string {
-	return d.adapter.address + "/" + d.Address
+	if d.adapter != nil {
+		return d.adapter.address + "/" + d.Address
+	}
+	return "/"
 }
 
 func (d *device) doConnect(hasNotify bool) error {
@@ -483,9 +549,9 @@ func (d *device) doConnect(hasNotify bool) error {
 
 	err := d.cancelBlock()
 	if err != nil {
-		if hasNotify {
-			// TODO(jouyouyun): notify device blocked
-		}
+		// if hasNotify {
+		// 	// TODO(jouyouyun): notify device blocked
+		// }
 		return err
 	}
 
@@ -497,21 +563,27 @@ func (d *device) doConnect(hasNotify bool) error {
 		}
 		return err
 	}
-	// d.audioA2DPWorkaround()
+
+	d.audioA2DPWorkaround()
 
 	err = d.doRealConnect()
 	if err != nil {
-		d.ConnectState = false
 		if hasNotify {
-			notifyConnectFailedHostDown(d.Alias)
+			if resourceUnavailable == err.Error() {
+				notifyConnectFailedResourceUnavailable(d.Alias, d.adapter.Alias)
+			} else {
+				notifyConnectFailedHostDown(d.Alias)
+			}
 		}
+		d.ConnectState = false
 		return err
 	}
 
 	d.ConnectState = true
 	d.notifyDevicePropertiesChanged()
-	if hasNotify && d.Paired && d.State == deviceStateConnected && d.ConnectState {
+	if d.needNotify && d.Paired && d.State == deviceStateConnected && d.ConnectState {
 		notifyConnected(d.Alias)
+		d.needNotify = false
 	}
 	return nil
 }
@@ -532,7 +604,10 @@ func (d *device) doRealConnect() error {
 	globalBluetooth.config.setDeviceConfigConnected(d, true)
 
 	// auto trust device when connecting success
-	d.doTrust()
+	err = d.doTrust()
+	if err != nil {
+		logger.Warning(err)
+	}
 
 	return nil
 }
@@ -602,7 +677,7 @@ func (d *device) getAndResetNeedRemove() bool {
 	defer d.removeLock.Unlock()
 	needRemove := d.needRemove
 	// if needRemove is true, reset needRemove
-	if needRemove == true {
+	if needRemove {
 		d.needRemove = false
 	}
 	return needRemove
@@ -625,10 +700,8 @@ func (d *device) Connect() {
 	// set ensure state as true
 	d.SetInitiativeConnect(true)
 	err := d.doConnect(true)
-	// add active connected device to map in case auto connect close this device
-	// when auto connect happens, this type device element is not nil, dont try to create connection
-	if err == nil && d.ConnectState == true {
-		globalBluetooth.addConnectedDevice(d)
+	if err != nil {
+		logger.Warning("connect Device Failed:", err)
 	}
 }
 
@@ -654,6 +727,14 @@ func (d *device) Disconnect() {
 		return
 	}
 
+	// 判断是否为经典设备, 如果非经典设备, 则先设置trusted为false, 防止回连
+	if !globalBluetooth.isBREDRDevice(d) {
+		err := d.core.Trusted().Set(0, false)
+		if err != nil {
+			logger.Warningf("set trust failed, err: %v", err)
+		}
+	}
+
 	globalBluetooth.config.setDeviceConfigConnected(d, false)
 
 	ch := d.goWaitDisconnect()
@@ -669,6 +750,7 @@ func (d *device) Disconnect() {
 
 	<-ch
 	notifyDisconnected(d.Alias)
+	d.needNotify = true
 }
 
 func (d *device) goWaitDisconnect() chan struct{} {
@@ -698,4 +780,23 @@ func (d *device) GetInitiativeConnect() bool {
 	needEnsure := d.isInitiativeConnect
 	d.mu.Unlock()
 	return needEnsure
+}
+
+func newBackupDevice(d *device) (bd *backupDevice) {
+	bd = &backupDevice{}
+	bd.AdapterPath = d.AdapterPath
+	bd.Path = d.Path
+	bd.connected = d.connected
+	bd.Alias = d.Alias
+	bd.Paired = d.Paired
+	bd.Address = d.Address
+	bd.State = d.State
+	bd.Name = d.Name
+	bd.ConnectState = d.ConnectState
+	bd.Icon = d.Icon
+	bd.RSSI = d.RSSI
+	bd.ServicesResolved = d.ServicesResolved
+	bd.Trusted = d.Trusted
+	bd.UUIDs = d.UUIDs
+	return bd
 }

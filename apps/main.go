@@ -24,6 +24,8 @@ import (
 	"pkg.deepin.io/lib/log"
 )
 
+//go:generate dbusutil-gen em -type ALRecorder,DFWatcher
+
 var logger = log.NewLogger("daemon/apps")
 
 func init() {
@@ -44,7 +46,6 @@ func NewDaemon(logger *log.Logger) *Daemon {
 
 func (d *Daemon) Start() error {
 	service := loader.GetService()
-	logger.Debug("apps daemon start")
 
 	var err error
 	d.watcher, err = newDFWatcher(service)

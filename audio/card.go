@@ -43,6 +43,8 @@ type CardExport struct {
 
 type CardPortExport struct {
 	Name        string
+	Enabled     bool
+	Bluetooth   bool
 	Description string
 	Direction   int
 }
@@ -68,6 +70,22 @@ func getCardName(card *pulse.Card) (name string) {
 	return
 }
 
+func (a *Audio) getCardNameById(cardId uint32) string {
+	if !a.isCardIdValid(cardId) {
+		// 出现这个报错通常是非常严重的问题，说明PulseAudio数据同步更新的重构没有完全实现，
+		// 出现此问题务必要清理掉
+		// 注意：有一种情况下属于正常现象，那就是调用IsPortEnabled的时候，但是不建议调用这个接口
+		logger.Warningf("invalid card ID %d", cardId)
+		return ""
+	}
+	card, err := a.ctx.GetCard(cardId)
+	if err != nil {
+		logger.Warning(err)
+		return ""
+	}
+	return card.Name
+}
+
 func (c *Card) update(card *pulse.Card) {
 	c.Id = card.Index
 	c.Name = getCardName(card)
@@ -75,7 +93,27 @@ func (c *Card) update(card *pulse.Card) {
 	sort.Sort(card.Profiles)
 	c.Profiles = newProfileList(card.Profiles)
 	c.filterProfile(card)
-	c.Ports = card.Ports
+
+	/* 蓝牙声卡的端口需要过滤 */
+	if isBluetoothCard(card) {
+		for _, port := range card.Ports {
+			if c.BluezMode() == bluezModeA2dp && port.Direction == pulse.DirectionSource {
+				// a2dp模式过滤输入端口
+				logger.Debugf("filter bluez input port %s", port.Name)
+				port.Available = pulse.AvailableTypeNo
+			}
+
+			if c.ActiveProfile.Name == "off" {
+				// off模式过滤所有端口
+				logger.Debugf("filter bluez input port %s", port.Name)
+				port.Available = pulse.AvailableTypeNo
+			}
+
+			c.Ports = append(c.Ports, port)
+		}
+	} else {
+		c.Ports = card.Ports
+	}
 }
 
 func (c *Card) tryGetProfileByPort(portName string) (string, error) {
@@ -100,12 +138,23 @@ func (c *Card) filterProfile(card *pulse.Card) {
 	c.Profiles = profiles
 }
 
+func (c *Card) getPortByName(name string) (pulse.CardPortInfo, error) {
+	for _, port := range c.Ports {
+		if port.Name == name {
+			return port, nil
+		}
+	}
+
+	return pulse.CardPortInfo{}, fmt.Errorf("port<%s,%s> not found", c.core.Name, name)
+}
+
 type CardList []*Card
 
 func newCardList(cards []*pulse.Card) CardList {
 	var result CardList
 	for _, v := range cards {
 		result = append(result, newCard(v))
+		logger.Debugf("add card #%d %s", v.Index, v.Name)
 	}
 	return result
 }
@@ -115,8 +164,11 @@ func (cards CardList) string() string {
 	for _, cardInfo := range cards {
 		var ports []CardPortExport
 		for _, portInfo := range cardInfo.Ports {
+			_, portConfig := GetConfigKeeper().GetCardAndPortConfig(cardInfo.core.Name, portInfo.Name)
 			ports = append(ports, CardPortExport{
 				Name:        portInfo.Name,
+				Enabled:     portConfig.Enabled,
+				Bluetooth:   isBluetoothCard(cardInfo.core),
 				Description: portInfo.Description,
 				Direction:   portInfo.Direction,
 			})
@@ -131,6 +183,35 @@ func (cards CardList) string() string {
 	return toJSON(list)
 }
 
+func (cards CardList) stringWithoutUnavailable() string {
+	var list []CardExport
+	for _, cardInfo := range cards {
+		var ports []CardPortExport
+		for _, portInfo := range cardInfo.Ports {
+			if portInfo.Available == pulse.AvailableTypeNo {
+				logger.Debugf("port '%s(%s)' is unavailable", portInfo.Name, portInfo.Description)
+				continue
+			}
+			_, portConfig := GetConfigKeeper().GetCardAndPortConfig(cardInfo.core.Name, portInfo.Name)
+			ports = append(ports, CardPortExport{
+				Name:        portInfo.Name,
+				Enabled:     portConfig.Enabled,
+				Bluetooth:   isBluetoothCard(cardInfo.core),
+				Description: portInfo.Description,
+				Direction:   portInfo.Direction,
+			})
+		}
+
+		list = append(list, CardExport{
+			Id:    cardInfo.Id,
+			Name:  cardInfo.Name,
+			Ports: ports,
+		})
+	}
+
+	return toJSON(list)
+}
+
 func (cards CardList) get(id uint32) (*Card, error) {
 	for _, info := range cards {
 		if info.Id == id {
@@ -138,6 +219,15 @@ func (cards CardList) get(id uint32) (*Card, error) {
 		}
 	}
 	return nil, fmt.Errorf("invalid card id: %v", id)
+}
+
+func (cards CardList) getByName(cardName string) (*Card, error) {
+	for _, info := range cards {
+		if info.core.Name == cardName {
+			return info, nil
+		}
+	}
+	return nil, fmt.Errorf("invalid card name: %v", cardName)
 }
 
 func (cards CardList) add(info *Card) (CardList, bool) {

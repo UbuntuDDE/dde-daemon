@@ -39,60 +39,80 @@ func isDesktopFile(path string) bool {
 	return matched
 }
 
-func isDirectory(path string) (bool, error) {
-	fileInfo, err := os.Stat(path)
-	if err != nil {
-		return false, err
+//当允许或者禁止搜索包名时,设置SearchTarget中的包名字段
+func (m *Manager) handlePackageNameSearchChanged() {
+	enabled := m.settings.GetBoolean(gsKeyPackageNameSearch)
+	logger.Debug("itemSearchTarget update, search package name enable: ", enabled)
+	if enabled != m.packageNameSearchEnabled {
+		if enabled {
+			for _, item := range m.items {
+				item.addSearchTarget(idScore, item.ID)
+			}
+		} else {
+			for _, item := range m.items {
+				item.deleteSearchTarget(item.ID)
+			}
+		}
 	}
-	return fileInfo.IsDir(), nil
+	m.packageNameSearchEnabled = enabled
+
+}
+
+func (m *Manager) handleAppHiddenChanged() {
+	m.appsHiddenMu.Lock()
+	defer m.appsHiddenMu.Unlock()
+
+	newVal := m.settings.GetStrv(gsKeyAppsHidden)
+	logger.Debug(gsKeyAppsHidden+" changed", newVal)
+
+	added, removed := diffAppsHidden(m.appsHidden, newVal)
+	logger.Debugf(gsKeyAppsHidden+" added: %v, removed: %v", added, removed)
+	for _, appID := range added {
+		// apps need to be hidden
+		item := m.getItemById(appID)
+		if item == nil {
+			continue
+		}
+
+		m.removeItem(appID)
+		m.emitItemChanged(item, AppStatusDeleted)
+	}
+
+	for _, appID := range removed {
+		// apps need to be displayed
+		item := m.getItemById(appID)
+		if item != nil {
+			continue
+		}
+
+		appInfo := desktopappinfo.NewDesktopAppInfo(appID)
+		if appInfo == nil {
+			continue
+		}
+
+		item = NewItemWithDesktopAppInfo(appInfo)
+		m.setItemID(item)
+		shouldShow := appInfo.ShouldShow() &&
+			!isDeepinCustomDesktopFile(appInfo.GetFileName())
+
+		if !shouldShow {
+			continue
+		}
+
+		m.addItemWithLock(item)
+		m.emitItemChanged(item, AppStatusCreated)
+	}
+	m.appsHidden = newVal
 }
 
 func (m *Manager) listenSettingsChanged() {
-	gsettings.ConnectChanged(gsSchemaLauncher, gsKeyAppsHidden, func(key string) {
-		m.appsHiddenMu.Lock()
-		defer m.appsHiddenMu.Unlock()
-
-		newVal := m.settings.GetStrv(gsKeyAppsHidden)
-		logger.Debug(gsKeyAppsHidden+" changed", newVal)
-
-		added, removed := diffAppsHidden(m.appsHidden, newVal)
-		logger.Debugf(gsKeyAppsHidden+" added: %v, removed: %v", added, removed)
-		for _, appID := range added {
-			// apps need to be hidden
-			item := m.getItemById(appID)
-			if item == nil {
-				continue
-			}
-
-			m.removeItem(appID)
-			m.emitItemChanged(item, AppStatusDeleted)
+	gsettings.ConnectChanged(gsSchemaLauncher, "*", func(key string) {
+		switch key {
+		case gsKeyAppsHidden:
+			m.handleAppHiddenChanged()
+		case gsKeyPackageNameSearch:
+			m.handlePackageNameSearchChanged()
 		}
-
-		for _, appID := range removed {
-			// apps need to be displayed
-			item := m.getItemById(appID)
-			if item != nil {
-				continue
-			}
-
-			appInfo := desktopappinfo.NewDesktopAppInfo(appID)
-			if appInfo == nil {
-				continue
-			}
-
-			item = NewItemWithDesktopAppInfo(appInfo)
-			m.setItemID(item)
-			shouldShow := appInfo.ShouldShow() &&
-				!isDeepinCustomDesktopFile(appInfo.GetFileName())
-
-			if !shouldShow {
-				continue
-			}
-
-			m.addItemWithLock(item)
-			m.emitItemChanged(item, AppStatusCreated)
-		}
-		m.appsHidden = newVal
 	})
 }
 
@@ -139,7 +159,7 @@ func (m *Manager) handleFsWatcherEvents() {
 	watcher := m.fsWatcher
 	for {
 		select {
-		case ev, ok := <-watcher.Event:
+		case ev, ok := <-watcher.Events:
 			if !ok {
 				logger.Error("Invalid watcher event:", ev)
 				return
@@ -147,7 +167,7 @@ func (m *Manager) handleFsWatcherEvents() {
 
 			logger.Debugf("fsWatcher event: %v", ev)
 			m.delayHandleFileEvent(ev.Name)
-		case err := <-watcher.Error:
+		case err := <-watcher.Errors:
 			logger.Warning("fsWatcher error", err)
 			return
 		}
@@ -274,5 +294,8 @@ func (m *Manager) emitItemChanged(item *Item, status string) {
 	atomic.StoreUint32(&m.itemsChangedHit, 1)
 	itemInfo := item.newItemInfo()
 	logger.Debugf("emit signal ItemChanged status: %v, itemInfo: %v", status, itemInfo)
-	m.service.Emit(m, "ItemChanged", status, itemInfo, itemInfo.CategoryID)
+	err := m.service.Emit(m, "ItemChanged", status, itemInfo, itemInfo.CategoryID)
+	if err != nil {
+		logger.Warning("emit emitItemChanged Failed", err)
+	}
 }

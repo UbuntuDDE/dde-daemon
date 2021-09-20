@@ -35,7 +35,7 @@ const (
 )
 
 func init() {
-	os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	_ = os.Setenv("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 }
 
 type modifyManager struct {
@@ -64,21 +64,19 @@ func (m *modifyManager) notifyStateChange() {
 
 func (m *modifyManager) loop() {
 	for {
-		select {
-		case t, ok := <-m.ch:
-			if !ok {
-				return
-			}
-			m.mu.Lock()
-
-			if m.running {
-				m.modifyTasks = append(m.modifyTasks, t)
-			} else {
-				m.start(t)
-			}
-
-			m.mu.Unlock()
+		t, ok := <-m.ch
+		if !ok {
+			return
 		}
+		m.mu.Lock()
+
+		if m.running {
+			m.modifyTasks = append(m.modifyTasks, t)
+		} else {
+			m.start(t)
+		}
+
+		m.mu.Unlock()
 	}
 }
 
@@ -152,6 +150,15 @@ func runUpdateGrub() error {
 		// fallback to grub-mkconfig
 		cmd = exec.Command(grubMkconfigCmd, "-o", grubScriptFile)
 		logger.Debugf("$ %s -o %s", grubMkconfigCmd, grubScriptFile)
+	}
+
+	locale := getSystemLocale()
+	if locale != "" {
+		logger.Info("system locale:", locale)
+		language := strings.Split(locale, ".")[0]
+		cmd.Env = append(os.Environ(), "LANG="+locale, "LANGUAGE="+language)
+	} else {
+		logger.Warning("failed to get system locale")
 	}
 
 	cmd.Stdout = os.Stdout

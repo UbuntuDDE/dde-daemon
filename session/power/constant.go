@@ -19,6 +19,7 @@
 
 package power
 
+// nolint
 const (
 	gsSchemaPower = "com.deepin.dde.power"
 	// settingKeys
@@ -42,7 +43,7 @@ const (
 	settingKeyBatteryLidClosedAction       = "battery-lid-closed-action"
 	settingKeyBatteryPressPowerBtnAction   = "battery-press-power-button"
 	settingKeyLowPowerNotifyEnable         = "low-power-notify-enable"
-	settingKeyLowPowerNotifyThreshold      = "percentage-low"
+	settingKeyLowPowerNotifyThreshold      = "low-power-notify-threshold"
 	settingKeyLowPowerAutoSleepThreshold   = "percentage-action"
 	settingKeyBrightnessDropPercent        = "brightness-drop-percent"
 	settingKeyPowerSavingEnabled           = "power-saving-mode-enabled"
@@ -52,16 +53,20 @@ const (
 	settingKeyFullScreenWorkaroundEnabled = "fullscreen-workaround-enabled"
 	settingKeyUsePercentageForPolicy      = "use-percentage-for-policy"
 
-	settingKeyPowerModuleInitialized = "power-module-initialized"
-	settingKeyLowPercentage          = "percentage-low"
-	settingKeyDangerlPercentage      = "percentage-danger"
-	settingKeyCriticalPercentage     = "percentage-critical"
-	settingKeyActionPercentage       = "percentage-action"
+	settingKeyLowPercentage      = "percentage-low"
+	settingKeyDangerlPercentage  = "percentage-danger"
+	settingKeyCriticalPercentage = "percentage-critical"
+	settingKeyActionPercentage   = "percentage-action"
 
 	settingKeyLowTime      = "time-to-empty-low"
 	settingKeyDangerTime   = "time-to-empty-danger"
 	settingKeyCriticalTime = "time-to-empty-critical"
 	settingKeyActionTime   = "time-to-empty-action"
+
+	settingKeySaveBrightnessWhilePsm = "save-brightness-while-psm"
+
+	settingLightSensorEnabled = "light-sensor-enabled"
+	settingKeyMode            = "mode"
 
 	// cmd
 	cmdDDELowPower = "/usr/lib/deepin-daemon/dde-lowpower"

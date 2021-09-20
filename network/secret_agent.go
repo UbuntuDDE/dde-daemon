@@ -13,9 +13,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/godbus/dbus"
+	ofdbus "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.dbus"
 	secrets "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.secrets"
 	"pkg.deepin.io/dde/daemon/network/nm"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/strv"
 )
@@ -24,15 +25,15 @@ const (
 	nmSecretDialogBin              = "/usr/lib/deepin-daemon/dnetwork-secret-dialog"
 	getSecretsFlagAllowInteraction = 0x1
 	getSecretsFlagRequestNew       = 0x2
-	getSecretsFlagUserRequested    = 0x4
+	getSecretsFlagUserRequested    = 0x4 //nolint
 
-	secretFlagNone          = 0 // save for all user
-	secretFlagNoneStr       = "0"
-	secretFlagAgentOwned    = 1 // save for me
+	secretFlagNone          = 0   // save for all user
+	secretFlagNoneStr       = "0" //nolint
+	secretFlagAgentOwned    = 1   // save for me
 	secretFlagAgentOwnedStr = "1"
 	secretFlagAsk           = 2 // always ask
 	secretFlagAskStr        = "2"
-	secretFlagNotRequired   = 4 // no need password
+	secretFlagNotRequired   = 4 //nolint  //no need password
 
 	// keep keyring tags same with nm-applet
 	keyringTagConnUUID    = "connection-uuid"
@@ -50,10 +51,12 @@ type saveSecretsTask struct {
 }
 
 type SecretAgent struct {
-	secretService       *secrets.Service
+	sessionSigLoop      *dbusutil.SignalLoop
+	secretService       secrets.Service
 	secretSessionPath   dbus.ObjectPath
-	defaultCollection   *secrets.Collection
+	defaultCollection   secrets.Collection
 	defaultCollectionMu sync.Mutex
+	tryUnlockColMu      sync.Mutex
 
 	saveSecretsTasks   map[saveSecretsTaskKey]saveSecretsTask
 	saveSecretsTasksMu sync.Mutex
@@ -62,14 +65,6 @@ type SecretAgent struct {
 	needSleep bool
 
 	m *Manager
-
-	methods *struct {
-		GetSecrets        func() `in:"connection,connectionPath,settingName,hints,flags" out:"secrets"`
-		CancelGetSecrets  func() `in:"connectionPath,settingName"`
-		SaveSecrets       func() `in:"connection,connectionPath"`
-		SaveSecretsDeepin func() `in:"connection,connectionPath"`
-		DeleteSecrets     func() `in:"connection,connectionPath"`
-	}
 }
 
 var errSecretAgentUserCanceled = errors.New("user canceled")
@@ -109,7 +104,20 @@ func (sa *SecretAgent) getSaveSecretsTaskProcess(connPath dbus.ObjectPath,
 	return task.process
 }
 
-func (sa *SecretAgent) getDefaultCollection() (*secrets.Collection, error) {
+// getDefaultCollection 获取默认密钥环，并且尝试解锁它。
+func (sa *SecretAgent) getDefaultCollection() (secrets.Collection, error) {
+	col, err := sa.getDefaultCollectionAux()
+	if err != nil {
+		return nil, err
+	}
+	err = sa.tryUnlockCollection(col)
+	if err != nil {
+		return nil, err
+	}
+	return col, nil
+}
+
+func (sa *SecretAgent) getDefaultCollectionAux() (secrets.Collection, error) {
 	sa.defaultCollectionMu.Lock()
 	defer sa.defaultCollectionMu.Unlock()
 
@@ -138,19 +146,27 @@ func (sa *SecretAgent) getDefaultCollection() (*secrets.Collection, error) {
 	return collectionObj, err
 }
 
-func newSecretAgent(secServiceObj *secrets.Service, manager *Manager) (*SecretAgent, error) {
+func newSecretAgent(secServiceObj secrets.Service, manager *Manager) (*SecretAgent, error) {
 	_, sessionPath, err := secServiceObj.OpenSession(0, "plain", dbus.MakeVariant(""))
 	if err != nil {
 		return nil, err
 	}
 
 	sa := &SecretAgent{}
+	sa.sessionSigLoop = manager.sessionSigLoop
 	sa.secretSessionPath = sessionPath
 	sa.secretService = secServiceObj
 	sa.saveSecretsTasks = make(map[saveSecretsTaskKey]saveSecretsTask)
 	sa.m = manager
 	sa.needSleep = true
 	logger.Debug("session path:", sessionPath)
+
+	// 尽早解锁密钥环
+	_, err = sa.getDefaultCollection()
+	if err != nil {
+		logger.Warning(err)
+	}
+
 	return sa, nil
 }
 
@@ -184,6 +200,104 @@ func (sa *SecretAgent) deleteAll(uuid string) error {
 		}
 	}
 	return nil
+}
+
+// tryUnlockCollection 尝试解锁密钥环，如果返回错误则解锁失败。
+func (sa *SecretAgent) tryUnlockCollection(collection secrets.Collection) error {
+	// 保证同时只有一个解锁对话框
+	sa.tryUnlockColMu.Lock()
+	defer sa.tryUnlockColMu.Unlock()
+
+	locked, err := collection.Locked().Get(0)
+	if err != nil {
+		return err
+	}
+	if !locked {
+		// 未上锁，直接返回
+		return nil
+	}
+
+	collectionPath := collection.Path_()
+
+	unlocked, promptPath, err := sa.secretService.Unlock(0, []dbus.ObjectPath{collectionPath})
+	if err != nil {
+		return err
+	}
+	logger.Debugf("call Unlock unlocked: %v, promptPath: %v", unlocked, promptPath)
+	for _, objPath := range unlocked {
+		if objPath == collectionPath {
+			// 大概已经无密码自动解锁了
+			return nil
+		}
+	}
+
+	if promptPath == "/" {
+		return errors.New("invalid prompt path")
+	}
+
+	sessionBus := sa.sessionSigLoop.Conn()
+
+	promptObj, err := secrets.NewPrompt(sessionBus, promptPath)
+	if err != nil {
+		return err
+	}
+	promptObj.InitSignalExt(sa.sessionSigLoop, true)
+	ch := make(chan error)
+
+	// 防止 org.freedesktop.secrets 服务异常退出，造成 promptObj 不能收到信号，让代码卡住。
+	dbusDaemon := ofdbus.NewDBus(sessionBus)
+	dbusDaemon.InitSignalExt(sa.sessionSigLoop, true)
+	_, err = dbusDaemon.ConnectNameOwnerChanged(func(name string, oldOwner string, newOwner string) {
+		if name == sa.secretService.ServiceName_() && oldOwner != "" && newOwner == "" {
+			ch <- errors.New(sa.secretService.ServiceName_() + " name lost")
+		}
+	})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		dbusDaemon.RemoveAllHandlers()
+	}()
+
+	// 监听解锁完成信号
+	_, err = promptObj.ConnectCompleted(func(dismissed bool, result dbus.Variant) {
+		// 用户取消解锁
+		if dismissed {
+			ch <- errors.New("prompt dismissed by user")
+			return
+		}
+
+		paths, ok := result.Value().([]dbus.ObjectPath)
+		if !ok {
+			ch <- errors.New("type of result.Value() is not []dbus.ObjectPath")
+			return
+		}
+		for _, objPath := range paths {
+			if objPath == collectionPath {
+				// 正常解锁完成
+				ch <- nil
+				return
+			}
+		}
+		// 这里的情况不太可能发生
+		ch <- errors.New("not found collection path in paths")
+	})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		promptObj.RemoveAllHandlers()
+	}()
+
+	// 调用 Prompt 方法之后就会弹出密钥环解锁对话框
+	err = promptObj.Prompt(0, "")
+	if err != nil {
+		return err
+	}
+
+	// 目前设计成无超时的
+	err = <-ch
+	return err
 }
 
 func (sa *SecretAgent) getAll(uuid, settingName string) (map[string]string, error) {
@@ -290,6 +404,7 @@ func (sa *SecretAgent) set(label, uuid, settingName, settingKey, value string) e
 	if err != nil {
 		return err
 	}
+
 	_, _, err = defaultCollection.CreateItem(0, properties, itemSecret, true)
 	return err
 }
@@ -492,9 +607,8 @@ func (sa *SecretAgent) getSecrets(connectionData map[string]map[string]dbus.Vari
 	secretsData = make(map[string]map[string]dbus.Variant)
 	setting := make(map[string]dbus.Variant)
 	secretsData[settingName] = setting
-
+	var vpnSecretsData map[string]string
 	if settingName == "vpn" {
-		vpnSecretsData := make(map[string]string)
 		if getSettingVpnServiceType(connectionData) == nmOpenConnectServiceType {
 			vpnSecretsData, ok = <-sa.createPendingKey(connectionData, hints, flags)
 			if !ok {
@@ -568,7 +682,7 @@ func (sa *SecretAgent) getSecrets(connectionData map[string]map[string]dbus.Vari
 					isMustAsk(connectionData, settingName, secretKey) {
 					askItems = append(askItems, secretKey)
 				}
-			} else if secretFlags == secretFlagAgentOwned && sa.m.saveToKeyring {
+			} else if secretFlags == secretFlagAgentOwned {
 				if requestNew {
 					// check if NMSecretAgentGetSecretsFlags contains NM_SECRET_AGENT_GET_SECRETS_FLAG_REQUEST_NEW
 					// if is, means the password we set last time is incorrect, new password is needed
@@ -585,11 +699,6 @@ func (sa *SecretAgent) getSecrets(connectionData map[string]map[string]dbus.Vari
 						askItems = append(askItems, secretKey)
 					}
 				}
-			} else if !sa.m.saveToKeyring {
-				err = sa.deleteAll(connUUID)
-				if err != nil {
-					return nil, err
-				}
 			}
 		}
 		if allowInteraction && len(askItems) > 0 {
@@ -599,13 +708,12 @@ func (sa *SecretAgent) getSecrets(connectionData map[string]map[string]dbus.Vari
 				logger.Warning("askPasswords error:", err)
 				return nil, errSecretAgentUserCanceled
 			} else {
+				var items []settingItem
 				for key, value := range resultAsk {
 					setting[key] = dbus.MakeVariant(value)
 					secretFlags, _ := getConnectionDataUint32(connectionData, settingName,
 						getSecretFlagsKeyName(key))
 					if secretFlags == secretFlagAgentOwned {
-						sa.m.hasSaveSecret = false
-						var items []settingItem
 						valueStr, ok := setting[key].Value().(string)
 						if ok {
 							label := fmt.Sprintf("Network secret for %s/%s/%s", connId, settingName, key)
@@ -616,24 +724,15 @@ func (sa *SecretAgent) getSecrets(connectionData map[string]map[string]dbus.Vari
 								label:       label,
 							})
 						}
-						sa.m.items = items
 					}
 				}
-			}
-		}
-		// when requestNew is true or dont save secretKey here
-		if !sa.m.saveToKeyring || requestNew {
-			for _, item := range sa.m.items {
-				secretFlags, _ := getConnectionDataUint32(connectionData, item.settingName,
-					getSecretFlagsKeyName(item.settingKey))
-				if secretFlags == secretFlagAgentOwned {
-					sa.m.hasSaveSecret = false
-					sa.m.saveToKeyring = true
-					setting[item.settingKey] = dbus.MakeVariant(item.value)
-					return
+
+				for _, item := range items {
+					sa.set(item.label, connUUID, item.settingName, item.settingKey, item.value)
 				}
 			}
 		}
+
 		resultSaved, err := sa.getAll(connUUID, settingName)
 		if err != nil {
 			return nil, err
@@ -668,7 +767,10 @@ func (sa *SecretAgent) CancelGetSecrets(connectionPath dbus.ObjectPath, settingN
 	process := sa.getSaveSecretsTaskProcess(connectionPath, settingName)
 	if process != nil {
 		logger.Debug("kill process", process.Pid)
-		process.Kill()
+		err := process.Kill()
+		if err != nil {
+			return dbusutil.ToError(err)
+		}
 	}
 
 	return nil
@@ -714,15 +816,38 @@ func (a *SecretAgent) createPendingKey(connectionData map[string]map[string]dbus
 
 		// send vpn connection data to the authentication dialog binary
 		for key, value := range vpnData {
-			stdinWriter.WriteString("DATA_KEY=" + key + "\n")
-			stdinWriter.WriteString("DATA_VAL=" + value + "\n\n")
+			_, err = stdinWriter.WriteString("DATA_KEY=" + key + "\n")
+			if err != nil {
+				logger.Warning("failed to write string", err)
+				return
+			}
+			_, err = stdinWriter.WriteString("DATA_VAL=" + value + "\n\n")
+			if err != nil {
+				logger.Warning("failed to write string", err)
+				return
+			}
 		}
 		for key, value := range vpnSecretData {
-			stdinWriter.WriteString("SECRET_KEY=" + key + "\n")
-			stdinWriter.WriteString("SECRET_VAL=" + value + "\n\n")
+			_, err = stdinWriter.WriteString("SECRET_KEY=" + key + "\n")
+			if err != nil {
+				logger.Warning("failed to write string", err)
+				return
+			}
+			_, err = stdinWriter.WriteString("SECRET_VAL=" + value + "\n\n")
+			if err != nil {
+				logger.Warning("failed to write string", err)
+				return
+			}
 		}
-		stdinWriter.WriteString("DONE\n\n")
-		stdinWriter.Flush()
+		_, err = stdinWriter.WriteString("DONE\n\n")
+		if err != nil {
+			logger.Warning("failed to write string", err)
+			return
+		}
+		err = stdinWriter.Flush()
+		if err != nil {
+			logger.Warning("failed to flush auth dialog data", err)
+		}
 
 		newVpnSecretData := make(map[string]string)
 		lastKey := ""
@@ -752,7 +877,11 @@ func (a *SecretAgent) createPendingKey(connectionData map[string]map[string]dbus
 		}
 
 		// notify auth dialog to quit
-		stdinWriter.WriteString("QUIT\n\n")
+		_, err = stdinWriter.WriteString("QUIT\n\n")
+		if err != nil {
+			logger.Warning("failed to write string", err)
+			return
+		}
 		err = stdinWriter.Flush()
 		if err == nil {
 			ch <- newVpnSecretData
@@ -924,7 +1053,6 @@ func (sa *SecretAgent) saveSecrets(connectionData map[string]map[string]dbus.Var
 		for key, value := range setting {
 			if strv.Strv(secretKeys).Contains(key) {
 				// key is secret key
-
 				secretFlags, _ := getConnectionDataUint32(connectionData,
 					settingName, getSecretFlagsKeyName(key))
 				if secretFlags != secretFlagAgentOwned {
@@ -947,17 +1075,16 @@ func (sa *SecretAgent) saveSecrets(connectionData map[string]map[string]dbus.Var
 	for _, item := range arr {
 		label := item.label
 		if label == "" {
-			item.label = fmt.Sprintf("Network secret for %s/%s/%s", connId,
+			label = fmt.Sprintf("Network secret for %s/%s/%s", connId,
 				item.settingName, item.settingKey)
 		}
-		secretFlags, _ := getConnectionDataUint32(connectionData, item.settingName,
-			getSecretFlagsKeyName(item.settingKey))
-		if secretFlags == secretFlagAgentOwned {
-			sa.m.saveToKeyring = false
-			sa.m.items = arr
-			continue
+
+		sa.set(label, connUUID, item.settingName, item.settingKey, item.value)
+		err := sa.set(item.label, connUUID, item.settingName, item.settingKey, item.value)
+		if err != nil {
+			logger.Debug("failed to save Secret to keyring")
+			return err
 		}
-		sa.set(item.label, connUUID, item.settingName, item.settingKey, item.value)
 	}
 
 	// delete
@@ -967,7 +1094,11 @@ func (sa *SecretAgent) saveSecrets(connectionData map[string]map[string]dbus.Var
 				getSecretFlagsKeyName(secretKey))
 
 			if secretFlags != secretFlagAgentOwned {
-				sa.delete(connUUID, settingName, secretKey)
+				err := sa.delete(connUUID, settingName, secretKey)
+				if err != nil {
+					logger.Debug("failed to delete secret")
+					return err
+				}
 			}
 		}
 	}
@@ -979,7 +1110,11 @@ func (sa *SecretAgent) saveSecrets(connectionData map[string]map[string]dbus.Var
 			for _, secretKey := range vpnSecretKeys {
 				secretFlags := vpnDataMap[getSecretFlagsKeyName(secretKey)]
 				if secretFlags != secretFlagAgentOwnedStr {
-					sa.delete(connUUID, "vpn", secretKey)
+					err := sa.delete(connUUID, "vpn", secretKey)
+					if err != nil {
+						logger.Debug("failed to delete secret")
+						return err
+					}
 				}
 			}
 		}
@@ -1000,10 +1135,14 @@ func (sa *SecretAgent) DeleteSecrets(connectionData map[string]map[string]dbus.V
 	}
 
 	err := sa.deleteAll(connUUID)
+	if err != nil {
+		logger.Debug("failed to delete secret")
+		return dbusutil.ToError(err)
+	}
 	return dbusutil.ToError(err)
 }
 
-func (*SecretAgentSession) GetSystemBusName() (string, *dbus.Error) {
+func (*SecretAgentSession) GetSystemBusName() (name string, busErr *dbus.Error) {
 	sysBus, err := dbus.SystemBus()
 	if err != nil {
 		return "", dbusutil.ToError(err)
@@ -1012,9 +1151,6 @@ func (*SecretAgentSession) GetSystemBusName() (string, *dbus.Error) {
 }
 
 type SecretAgentSession struct {
-	methods *struct {
-		GetSystemBusName func() `out:"name"`
-	}
 }
 
 func (*SecretAgentSession) GetInterfaceName() string {

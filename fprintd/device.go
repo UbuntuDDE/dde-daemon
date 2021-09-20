@@ -24,8 +24,8 @@ import (
 	"path"
 	"strings"
 
-	"github.com/linuxdeepin/go-dbus-factory/net.reactivated.fprint"
-	"pkg.deepin.io/lib/dbus1"
+	"github.com/godbus/dbus"
+	fprint "github.com/linuxdeepin/go-dbus-factory/net.reactivated.fprint"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/proxy"
 )
@@ -34,31 +34,6 @@ const (
 	actionIdEnroll = "com.deepin.daemon.fprintd.enroll"
 	actionIdDelete = "com.deepin.daemon.fprintd.delete-enrolled-fingers"
 )
-
-type deviceMethods struct {
-	Claim                 func() `in:"username"`
-	ClaimForce            func() `in:"username"`
-	GetCapabilities       func() `out:"caps"`
-	EnrollStart           func() `in:"finger"`
-	VerifyStart           func() `in:"finger"`
-	DeleteEnrolledFingers func() `in:"username"`
-	DeleteEnrolledFinger  func() `in:"username,finger"`
-	ListEnrolledFingers   func() `in:"username" out:"fingers"`
-}
-
-type deviceSignals struct {
-	EnrollStatus struct {
-		status string
-		done   bool
-	}
-	VerifyStatus struct {
-		status string
-		done   bool
-	}
-	VerifyFingerSelected struct {
-		finger string
-	}
-}
 
 type IDevice interface {
 	destroy()
@@ -71,13 +46,9 @@ type IDevice interface {
 
 type Device struct {
 	service *dbusutil.Service
-	core    *fprint.Device
+	core    fprint.Device
 
 	ScanType string
-	methods  *deviceMethods
-
-	// TODO: enroll image
-	signals *deviceSignals
 }
 
 type Devices []IDevice
@@ -199,7 +170,7 @@ func (dev *Device) DeleteEnrolledFinger(sender dbus.Sender, username string, fin
 	return dbusutil.ToError(errors.New("can not delete fprintd single finger"))
 }
 
-func (dev *Device) GetCapabilities() ([]string, *dbus.Error) {
+func (dev *Device) GetCapabilities() (caps []string, dbusErr *dbus.Error) {
 	return nil, nil
 }
 
@@ -207,7 +178,7 @@ func (dev *Device) ClaimForce(sender dbus.Sender, username string) *dbus.Error {
 	return dbusutil.ToError(errors.New("can not claim force"))
 }
 
-func (dev *Device) ListEnrolledFingers(username string) ([]string, *dbus.Error) {
+func (dev *Device) ListEnrolledFingers(username string) (fingers []string, busErr *dbus.Error) {
 	fingers, err := dev.core.ListEnrolledFingers(0, username)
 	if err != nil {
 		return nil, dbusutil.ToError(err)

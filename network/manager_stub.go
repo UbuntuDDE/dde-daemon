@@ -22,8 +22,8 @@ package network
 import (
 	"errors"
 
+	dbus "github.com/godbus/dbus"
 	"pkg.deepin.io/dde/daemon/network/nm"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 )
 
@@ -44,48 +44,34 @@ func (m *Manager) vpnEnabledWriteCb(write *dbusutil.PropertyWrite) *dbus.Error {
 		logger.Warning(err)
 		return dbusutil.ToError(err)
 	}
+
+	// if vpn enable state is set as true, try to auto connect vpn.
+	// when vpn enable state is set as false, close all vpn connections in system/network module.
+	if enabled {
+		err := enableNetworking()
+		if err != nil {
+			logger.Warning(err)
+			return nil
+		}
+		m.setVpnEnable(true)
+	}
+
 	return nil
 }
 
-func (m *Manager) setPropNetworkingEnabled(value bool) {
-	m.NetworkingEnabled = value
-	err := m.service.EmitPropertyChanged(m, "NetworkingEnabled", value)
-	if err != nil {
-		logger.Warning(err)
-	}
-}
-
-func (m *Manager) setPropWirelessEnabled(value bool) {
-	m.wirelessEnabled = value
-}
-func (m *Manager) setPropWwanEnabled(value bool) {
-	m.wwanEnabled = value
-}
-func (m *Manager) setPropWiredEnabled(value bool) {
-	m.wiredEnabled = value
-}
-
-func (m *Manager) setPropVpnEnabled(value bool) {
-	m.VpnEnabled = value
-	err := m.service.EmitPropertyChanged(m, "VpnEnabled", value)
-	if err != nil {
-		logger.Warning(err)
-	}
-}
-
 func (m *Manager) updatePropActiveConnections() {
-	m.ActiveConnections, _ = marshalJSON(m.activeConnections)
-	m.service.EmitPropertyChanged(m, "ActiveConnections", m.ActiveConnections)
+	activeConnections, _ := marshalJSON(m.activeConnections)
+	m.setPropActiveConnections(activeConnections)
 }
 
 func (m *Manager) updatePropState() {
-	m.State = nmGetManagerState()
-	m.service.EmitPropertyChanged(m, "State", m.State)
+	state := nmGetManagerState()
+	m.setPropState(state)
 }
 
 func (m *Manager) updatePropConnectivity() {
-	m.Connectivity, _ = nmManager.Connectivity().Get(0)
-	m.service.EmitPropertyChanged(m, "Connectivity", m.Connectivity)
+	connectivity, _ := nmManager.Connectivity().Get(0)
+	m.setPropConnectivity(connectivity)
 }
 
 func (m *Manager) updatePropDevices() {
@@ -101,11 +87,16 @@ func (m *Manager) updatePropDevices() {
 			}
 		}
 	}
-	m.Devices, _ = marshalJSON(filteredDevices)
-	m.service.EmitPropertyChanged(m, "Devices", m.Devices)
+	devices, _ := marshalJSON(filteredDevices)
+	m.setPropDevices(devices)
 }
 
 func (m *Manager) updatePropConnections() {
-	m.Connections, _ = marshalJSON(m.connections)
-	m.service.EmitPropertyChanged(m, "Connections", m.Connections)
+	connections, _ := marshalJSON(m.connections)
+	m.setPropConnections(connections)
+}
+
+func (m *Manager) updatePropWirelessAccessPoints() {
+	aps, _ := marshalJSON(m.accessPoints)
+	m.setPropWirelessAccessPoints(aps)
 }

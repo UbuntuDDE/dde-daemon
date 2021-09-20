@@ -179,10 +179,7 @@ func (ci *CommentInfo) SetFullName(value string) {
 }
 
 func isCommentFieldValid(name string) bool {
-	if strings.ContainsAny(name, ",=:\n") {
-		return false
-	}
-	return true
+	return !strings.ContainsAny(name, ",=:\n")
 }
 
 func ModifyFullName(fullName, username string) error {
@@ -267,11 +264,7 @@ const (
 
 func IsAutoLoginUser(username string) bool {
 	name, _ := GetAutoLoginUser()
-	if name == username {
-		return true
-	}
-
-	return false
+	return name == username
 }
 
 func IsAdminUser(username string) bool {
@@ -289,7 +282,7 @@ func CanNoPasswdLogin(username string) bool {
 
 func EnableNoPasswdLogin(username string, enabled bool) error {
 	if !isGroupExists(groupNameNoPasswdLogin) {
-		doAction("groupadd", []string{"-r", groupNameNoPasswdLogin})
+		_ = doAction("groupadd", []string{"-r", groupNameNoPasswdLogin})
 	}
 
 	var err error
@@ -415,7 +408,7 @@ func isUserInGroup(user, group string) bool {
 	return isStrInArray(user, v.Users)
 }
 
-func GetUserGroups(user string) ([]string, error) {
+func GetUserGroups(user, gid string) ([]string, error) {
 	groupFileLocker.Lock()
 	defer groupFileLocker.Unlock()
 	infos, err := getGroupInfoWithCache(userFileGroup)
@@ -425,7 +418,7 @@ func GetUserGroups(user string) ([]string, error) {
 
 	var result []string
 	for groupName, groupInfo := range infos {
-		if groupName == user {
+		if groupInfo.Gid == gid {
 			result = append(result, groupName)
 			continue
 		}

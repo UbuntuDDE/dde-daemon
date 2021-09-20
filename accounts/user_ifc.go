@@ -19,15 +19,24 @@
 
 package accounts
 
+/*
+#include <shadow.h>
+typedef struct spwd cspwd;
+*/
+import "C"
 import (
 	"errors"
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 
+	dbus "github.com/godbus/dbus"
 	"pkg.deepin.io/dde/api/lang_info"
 	"pkg.deepin.io/dde/daemon/accounts/users"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/gdkpixbuf"
 	"pkg.deepin.io/lib/imgutil"
@@ -63,7 +72,7 @@ func (u *User) SetFullName(sender dbus.Sender, name string) *dbus.Error {
 		}
 
 		u.FullName = name
-		u.emitPropChangedFullName(name)
+		_ = u.emitPropChangedFullName(name)
 	}
 
 	return nil
@@ -92,7 +101,7 @@ func (u *User) SetHomeDir(sender dbus.Sender, home string) *dbus.Error {
 			return dbusutil.ToError(err)
 		}
 		u.HomeDir = home
-		u.emitPropChangedHomeDir(home)
+		_ = u.emitPropChangedHomeDir(home)
 	}
 
 	return nil
@@ -129,7 +138,7 @@ func (u *User) SetShell(sender dbus.Sender, shell string) *dbus.Error {
 			return dbusutil.ToError(err)
 		}
 		u.Shell = shell
-		u.emitPropChangedShell(shell)
+		_ = u.emitPropChangedShell(shell)
 	}
 
 	return nil
@@ -144,6 +153,20 @@ func (u *User) SetPassword(sender dbus.Sender, password string) *dbus.Error {
 		return dbusutil.ToError(err)
 	}
 
+	var count = 10
+	for {
+		_, err := users.GetShadowInfo(u.UserName)
+
+		if err == nil {
+			break
+		}
+		count--
+		if count == 0 {
+			return dbusutil.ToError(errors.New("shadow file error"))
+		}
+		time.Sleep(time.Second)
+	}
+
 	if err := users.ModifyPasswd(password, u.UserName); err != nil {
 		logger.Warning("DoAction: modify password failed:", err)
 		return dbusutil.ToError(err)
@@ -152,13 +175,13 @@ func (u *User) SetPassword(sender dbus.Sender, password string) *dbus.Error {
 	u.PropsMu.Lock()
 	defer u.PropsMu.Unlock()
 
-	if u.Locked != false {
+	if u.Locked {
 		if err := users.LockedUser(false, u.UserName); err != nil {
 			logger.Warning("DoAction: unlock user failed:", err)
 			return dbusutil.ToError(err)
 		}
 		u.Locked = false
-		u.emitPropChangedLocked(false)
+		_ = u.emitPropChangedLocked(false)
 	}
 	return nil
 }
@@ -179,9 +202,9 @@ func (u *User) SetMaxPasswordAge(sender dbus.Sender, nDays int32) *dbus.Error {
 	return nil
 }
 
-func (u *User) IsPasswordExpired() (bool, *dbus.Error) {
-	v, err := users.IsPasswordExpired(u.UserName)
-	return v, dbusutil.ToError(err)
+func (u *User) IsPasswordExpired() (expired bool, busErr *dbus.Error) {
+	expired, err := users.IsPasswordExpired(u.UserName)
+	return expired, dbusutil.ToError(err)
 }
 
 func (u *User) SetLocked(sender dbus.Sender, locked bool) *dbus.Error {
@@ -203,7 +226,7 @@ func (u *User) SetLocked(sender dbus.Sender, locked bool) *dbus.Error {
 		}
 
 		u.Locked = locked
-		u.emitPropChangedLocked(locked)
+		_ = u.emitPropChangedLocked(locked)
 
 		if locked && u.AutomaticLogin {
 			if err := users.SetAutoLoginUser("", ""); err != nil {
@@ -211,7 +234,7 @@ func (u *User) SetLocked(sender dbus.Sender, locked bool) *dbus.Error {
 				return dbusutil.ToError(err)
 			}
 			u.AutomaticLogin = false
-			u.emitPropChangedAutomaticLogin(false)
+			_ = u.emitPropChangedAutomaticLogin(false)
 		}
 	}
 	return nil
@@ -297,7 +320,7 @@ func (u *User) SetAutomaticLogin(sender dbus.Sender, enabled bool) *dbus.Error {
 	}
 
 	u.AutomaticLogin = enabled
-	u.emitPropChangedAutomaticLogin(enabled)
+	_ = u.emitPropChangedAutomaticLogin(enabled)
 	return nil
 }
 
@@ -327,8 +350,15 @@ func (u *User) EnableNoPasswdLogin(sender dbus.Sender, enabled bool) *dbus.Error
 	}
 
 	u.NoPasswdLogin = enabled
-	u.emitPropChangedNoPasswdLogin(enabled)
+	_ = u.emitPropChangedNoPasswdLogin(enabled)
 	return nil
+}
+
+func (v *User) setLocale(value string) {
+	value = strings.Trim(value, "\"'")
+	if v.Locale != value {
+		v.Locale = value
+	}
 }
 
 func (u *User) SetLocale(sender dbus.Sender, locale string) *dbus.Error {
@@ -357,8 +387,8 @@ func (u *User) SetLocale(sender dbus.Sender, locale string) *dbus.Error {
 	if err != nil {
 		return dbusutil.ToError(err)
 	}
-	u.Locale = locale
-	u.emitPropChangedLocale(locale)
+	u.setLocale(locale)
+	_ = u.emitPropChangedLocale(locale)
 	return nil
 }
 
@@ -385,7 +415,7 @@ func (u *User) SetLayout(sender dbus.Sender, layout string) *dbus.Error {
 		return dbusutil.ToError(err)
 	}
 	u.Layout = layout
-	u.emitPropChangedLayout(layout)
+	_ = u.emitPropChangedLayout(layout)
 	return nil
 }
 
@@ -400,6 +430,33 @@ func (u *User) SetIconFile(sender dbus.Sender, iconURI string) *dbus.Error {
 
 	iconURI = dutils.EncodeURI(iconURI, dutils.SCHEME_FILE)
 	iconFile := dutils.DecodeURI(iconURI)
+
+	// check if file exist
+	_, err = os.Stat(iconFile)
+	if err != nil {
+		logger.Warning(err)
+		return dbusutil.ToError(err)
+	}
+
+	// if iconURI not in iconList, need to create temp icon file
+	if !isStrInArray(iconURI, u.IconList) {
+		// copy file to temp file, update icon file
+		iconFile, err = copyTempIconFile(iconFile, u.UserName)
+		if err != nil {
+			logger.Warningf("copy temp file failed, err: %v", err)
+			return dbusutil.ToError(err)
+		}
+		// remove file
+		defer func() {
+			err := os.Remove(iconFile)
+			if err != nil {
+				logger.Warningf("remove temp file failed, err: %v", err)
+				return
+			}
+		}()
+		// if temp icon file is create, update icon URI
+		iconURI = dutils.EncodeURI(iconFile, dutils.SCHEME_FILE)
+	}
 
 	if !gdkpixbuf.IsSupportedImage(iconFile) {
 		err := fmt.Errorf("%q is not a image file", iconFile)
@@ -448,7 +505,7 @@ func (u *User) SetIconFile(sender dbus.Sender, iconURI string) *dbus.Error {
 	}
 
 	u.IconFile = newIconURI
-	u.emitPropChangedIconFile(newIconURI)
+	_ = u.emitPropChangedIconFile(newIconURI)
 	return nil
 }
 
@@ -518,7 +575,38 @@ func (u *User) SetDesktopBackgrounds(sender dbus.Sender, val []string) *dbus.Err
 	}
 
 	u.DesktopBackgrounds = newVal
-	u.emitPropChangedDesktopBackgrounds(newVal)
+	_ = u.emitPropChangedDesktopBackgrounds(newVal)
+	return nil
+}
+
+// 记录当前工作区，登录时前端从记录文件中获取当前工作区以及相应的桌面背景
+func (u *User) SetCurrentWorkspace(sender dbus.Sender, currentWorkspace int32) *dbus.Error {
+	logger.Debug("[SetCurrentWorkspace] currentWorkspace", currentWorkspace)
+
+	err := u.checkAuth(sender, true, "")
+	if err != nil {
+		logger.Debug("[SetCurrentWorkspace] access denied:", err)
+		return dbusutil.ToError(err)
+	}
+
+	if currentWorkspace <= 0 {
+		return dbusutil.ToError(errors.New("currentWorkspace is err"))
+	}
+
+	u.PropsMu.Lock()
+	defer u.PropsMu.Unlock()
+
+	if currentWorkspace == u.Workspace {
+		return nil
+	}
+
+	err = u.writeUserConfigWithChange(confKeyWorkspace, currentWorkspace)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+
+	u.Workspace = currentWorkspace
+	_ = u.emitPropChangedWorkspace(currentWorkspace)
 	return nil
 }
 
@@ -554,7 +642,7 @@ func (u *User) SetGreeterBackground(sender dbus.Sender, bg string) *dbus.Error {
 		return dbusutil.ToError(err)
 	}
 	u.GreeterBackground = bg
-	u.emitPropChangedGreeterBackground(bg)
+	_ = u.emitPropChangedGreeterBackground(bg)
 	return nil
 }
 
@@ -581,7 +669,7 @@ func (u *User) SetHistoryLayout(sender dbus.Sender, list []string) *dbus.Error {
 		return dbusutil.ToError(err)
 	}
 	u.HistoryLayout = list
-	u.emitPropChangedHistoryLayout(list)
+	_ = u.emitPropChangedHistoryLayout(list)
 	return nil
 }
 
@@ -659,4 +747,233 @@ type ErrInvalidBackground struct {
 
 func (err ErrInvalidBackground) Error() string {
 	return fmt.Sprintf("%q is not a valid background file", err.FileName)
+}
+
+// copy file to root dir
+func copyTempIconFile(src string, username string) (string, error) {
+	// make dde-daemon dir
+	daemonDir := "/var/cache/deepin/dde-daemon"
+	err := os.MkdirAll(daemonDir, 0644)
+	if err != nil {
+		logger.Warningf("make dir failed, err: %v", err)
+		return "", err
+	}
+	// make image dir
+	imageDir := filepath.Join(daemonDir, "icon")
+	// make dir, only superuser can write and writer
+	err = os.MkdirAll(imageDir, 0600)
+	if err != nil {
+		logger.Warningf("make dir failed, err: %v", err)
+		return "", err
+	}
+	// create target file path
+	ns := time.Now().UnixNano()
+	base := username + "-" + strconv.FormatInt(ns, 36)
+	file := filepath.Join(imageDir, base)
+	// copy file
+	err = dutils.CopyFile(src, file)
+	if err != nil {
+		logger.Warningf("copy file failed, err: %v", err)
+		return "", err
+	}
+	return file, nil
+}
+
+func (u *User) SetWeekdayFormat(sender dbus.Sender, value int32) *dbus.Error {
+	err := u.checkAuth(sender, true, "")
+	if err != nil {
+		logger.Debug("[SetWeekdayFormat] access denied:", err)
+		return dbusutil.ToError(err)
+	}
+
+	u.PropsMu.Lock()
+	defer u.PropsMu.Unlock()
+
+	if value == u.WeekdayFormat {
+		return nil
+	}
+
+	err = u.writeUserConfigWithChange(confKeyWeekdayFormat, value)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+
+	u.WeekdayFormat = value
+	err = u.emitPropChangedWeekdayFormat(value)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+	return nil
+}
+
+func (u *User) SetShortDateFormat(sender dbus.Sender, value int32) *dbus.Error {
+	err := u.checkAuth(sender, true, "")
+	if err != nil {
+		logger.Debug("[SetShortDateFormat] access denied:", err)
+		return dbusutil.ToError(err)
+	}
+
+	u.PropsMu.Lock()
+	defer u.PropsMu.Unlock()
+
+	if value == u.ShortDateFormat {
+		return nil
+	}
+
+	err = u.writeUserConfigWithChange(confKeyShortDateFormat, value)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+
+	u.ShortDateFormat = value
+	err = u.emitPropChangedShortDateFormat(value)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+	return nil
+}
+
+func (u *User) SetLongDateFormat(sender dbus.Sender, value int32) *dbus.Error {
+	err := u.checkAuth(sender, true, "")
+	if err != nil {
+		logger.Debug("[SetLongDateFormat] access denied:", err)
+		return dbusutil.ToError(err)
+	}
+
+	u.PropsMu.Lock()
+	defer u.PropsMu.Unlock()
+
+	if value == u.LongDateFormat {
+		return nil
+	}
+
+	err = u.writeUserConfigWithChange(confKeyLongDateFormat, value)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+
+	u.LongDateFormat = value
+	err = u.emitPropChangedLongDateFormat(value)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+	return nil
+}
+
+func (u *User) SetShortTimeFormat(sender dbus.Sender, value int32) *dbus.Error {
+	err := u.checkAuth(sender, true, "")
+	if err != nil {
+		logger.Debug("[SetShortTimeFormat] access denied:", err)
+		return dbusutil.ToError(err)
+	}
+
+	u.PropsMu.Lock()
+	defer u.PropsMu.Unlock()
+
+	if value == u.ShortTimeFormat {
+		return nil
+	}
+
+	err = u.writeUserConfigWithChange(confKeyShortTimeFormat, value)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+
+	u.ShortTimeFormat = value
+	err = u.emitPropChangedShortTimeFormat(value)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+	return nil
+}
+
+func (u *User) SetLongTimeFormat(sender dbus.Sender, value int32) *dbus.Error {
+	err := u.checkAuth(sender, true, "")
+	if err != nil {
+		logger.Debug("[SetLongTimeFormat] access denied:", err)
+		return dbusutil.ToError(err)
+	}
+
+	u.PropsMu.Lock()
+	defer u.PropsMu.Unlock()
+
+	if value == u.LongTimeFormat {
+		return nil
+	}
+
+	err = u.writeUserConfigWithChange(confKeyLongTimeFormat, value)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+
+	u.LongTimeFormat = value
+	err = u.emitPropChangedLongTimeFormat(value)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+	return nil
+}
+
+func (u *User) SetWeekBegins(sender dbus.Sender, value int32) *dbus.Error {
+	err := u.checkAuth(sender, true, "")
+	if err != nil {
+		logger.Debug("[SetWeekBegins] access denied:", err)
+		return dbusutil.ToError(err)
+	}
+
+	u.PropsMu.Lock()
+	defer u.PropsMu.Unlock()
+
+	if value == u.WeekBegins {
+		return nil
+	}
+
+	err = u.writeUserConfigWithChange(confKeyWeekBegins, value)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+
+	u.WeekBegins = value
+	err = u.emitPropChangedWeekBegins(value)
+	if err != nil {
+		return dbusutil.ToError(err)
+	}
+	return nil
+}
+
+type ExpiredStatus int
+
+const (
+	expiredStatusNormal ExpiredStatus = iota
+	expiredStatusExpiredSoon
+	expiredStatusExpiredAlready
+)
+
+func (u *User) PasswordExpiredInfo() (expiredStatus ExpiredStatus, dayLeft int64, busErr *dbus.Error) {
+	var pw *C.cspwd
+	pw = C.getspnam(C.CString(u.UserName))
+	if pw == nil {
+		return expiredStatusNormal, 0, dbusutil.ToError(fmt.Errorf("get passwd for %s failed", u.UserName))
+	}
+
+	var spMax = int64(pw.sp_max)
+	var spWarn = int64(pw.sp_warn)
+	var spLastChg = int64(pw.sp_lstchg)
+
+	if spLastChg == 0 {
+		// expired
+		return expiredStatusExpiredAlready, 0, nil
+	}
+	if spMax == -1 {
+		// never expired
+		return expiredStatusNormal, -1, nil
+	}
+
+	relevantDay := spLastChg + 1 + spMax - time.Now().Unix()/24/60/60
+	if relevantDay <= 0 {
+		return expiredStatusExpiredAlready, 0, nil
+	} else if relevantDay <= spWarn {
+		return expiredStatusExpiredSoon, relevantDay, nil
+	}
+	return expiredStatusNormal, relevantDay, nil
 }

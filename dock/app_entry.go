@@ -35,6 +35,7 @@ const (
 )
 
 //go:generate dbusutil-gen -type AppEntry -import=github.com/linuxdeepin/go-x11-client=x app_entry.go
+//go:generate dbusutil-gen em -type AppEntry,Manager
 
 type AppEntry struct {
 	PropsMu  sync.RWMutex
@@ -57,14 +58,6 @@ type AppEntry struct {
 	current          *WindowInfo
 	appInfo          *AppInfo
 	winIconPreferred bool
-
-	methods *struct {
-		Activate               func() `in:"timestamp"`
-		HandleMenuItem         func() `in:"timestamp,id"`
-		HandleDragDrop         func() `in:"timestamp,files"`
-		NewInstance            func() `in:"timestamp"`
-		GetAllowedCloseWindows func() `out:"windows"`
-	}
 }
 
 func newAppEntry(dockManager *Manager, innerId string, appInfo *AppInfo) *AppEntry {
@@ -179,7 +172,7 @@ func (entry *AppEntry) setCurrentWindowInfo(winInfo *WindowInfo) {
 
 func (entry *AppEntry) findNextLeader() x.Window {
 	winSlice := make(windowSlice, 0, len(entry.windows))
-	for win, _ := range entry.windows {
+	for win := range entry.windows {
 		winSlice = append(winSlice, win)
 	}
 	sort.Sort(winSlice)

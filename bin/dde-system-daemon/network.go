@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/godbus/dbus"
 	. "pkg.deepin.io/dde/daemon/common/dsync"
 	"pkg.deepin.io/gir/glib-2.0"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 )
 
@@ -26,7 +26,7 @@ const (
 	nmSyncVersion = "1.0"
 )
 
-func (*Daemon) NetworkGetConnections() ([]byte, *dbus.Error) {
+func (*Daemon) NetworkGetConnections() (data []byte, busErr *dbus.Error) {
 	list, err := getConnectionList(nmConnDir)
 	if err != nil {
 		return nil, dbusutil.ToError(err)
@@ -35,7 +35,7 @@ func (*Daemon) NetworkGetConnections() ([]byte, *dbus.Error) {
 		Version:     nmSyncVersion,
 		Connections: list,
 	}
-	data, err := json.Marshal(&info)
+	data, err = json.Marshal(&info)
 	if err != nil {
 		return nil, dbusutil.ToError(err)
 	}
@@ -124,10 +124,10 @@ func loadConnectionFile(filename string) (*Connection, error) {
 	}
 
 	// erase some keys
-	kf.RemoveKey(kfSectionConnection, kfKeyInterfaceName)
-	kf.RemoveKey(kfSectionWIFI, kfKeyMac)
-	kf.RemoveKey(kfSectionWIFI, kfKeyMacBlacklist)
-	kf.RemoveKey(kfSectionWIFI, kfKeySeenBSSID)
+	_, _ = kf.RemoveKey(kfSectionConnection, kfKeyInterfaceName)
+	_, _ = kf.RemoveKey(kfSectionWIFI, kfKeyMac)
+	_, _ = kf.RemoveKey(kfSectionWIFI, kfKeyMacBlacklist)
+	_, _ = kf.RemoveKey(kfSectionWIFI, kfKeySeenBSSID)
 
 	_, contents, err := kf.ToData()
 	if err != nil {

@@ -20,17 +20,21 @@
 package proxychains
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	proxy "github.com/linuxdeepin/go-dbus-factory/com.deepin.system.proxy"
 	"os"
 	"path/filepath"
 	"sync"
 
-	dbus "pkg.deepin.io/lib/dbus1"
+	dbus "github.com/godbus/dbus"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/log"
 	"pkg.deepin.io/lib/xdg/basedir"
 )
+
+//go:generate dbusutil-gen em -type Manager
 
 var logger *log.Logger
 
@@ -41,6 +45,7 @@ func SetLogger(l *log.Logger) {
 type Manager struct {
 	service  *dbusutil.Service
 	PropsMu  sync.RWMutex
+	appProxy proxy.App
 	Type     string
 	IP       string
 	Port     uint32
@@ -49,20 +54,21 @@ type Manager struct {
 
 	jsonFile string
 	confFile string
-
-	methods *struct {
-		Set func() `in:"type0,ip,port,user,password"`
-	}
 }
 
 func NewManager(service *dbusutil.Service) *Manager {
 	cfgDir := basedir.GetUserConfigDir()
 	jsonFile := filepath.Join(cfgDir, "deepin", "proxychains.json")
 	confFile := filepath.Join(cfgDir, "deepin", "proxychains.conf")
+	sysBus, err := dbus.SystemBus()
+	if err != nil {
+		logger.Warningf("get sys bus failed, err: %v", err)
+	}
 	m := &Manager{
 		jsonFile: jsonFile,
 		confFile: confFile,
 		service:  service,
+		appProxy: proxy.NewApp(sysBus),
 	}
 	go m.init()
 	return m
@@ -114,6 +120,31 @@ func (m *Manager) init() {
 			logger.Warning("remove conf file failed:", err)
 		}
 	}
+
+	if m.IP != "" && m.Port != 0 {
+		settings := proxy.Proxy{
+			ProtoType: m.Type,
+			Name:      "default",
+			Server:    m.IP,
+			Port:      int(m.Port),
+			UserName:  m.User,
+			Password:  m.Password,
+		}
+		buf, err := json.Marshal(settings)
+		if err != nil {
+			return
+		}
+		err = m.appProxy.AddProxy(0, m.Type, "default", buf)
+		if err != nil {
+			logger.Warningf("add proxy failed, err: %v", err)
+			return
+		}
+		err = m.appProxy.StartProxy(0, m.Type, "default", false)
+		if err != nil {
+			logger.Warningf("start proxy failed, err: %v", err)
+			return
+		}
+	}
 }
 
 func (m *Manager) saveConfig() error {
@@ -127,8 +158,12 @@ func (m *Manager) saveConfig() error {
 	return cfg.save(m.jsonFile)
 }
 
+//nolint
 func (m *Manager) notifyChange(prop string, v interface{}) {
-	m.service.EmitPropertyChanged(m, prop, v)
+	err := m.service.EmitPropertyChanged(m, prop, v)
+	if err != nil {
+		logger.Warning("failed to emit signal", err)
+	}
 }
 
 func (m *Manager) fixConfig() bool {
@@ -179,6 +214,7 @@ type InvalidParamError struct {
 	Param string
 }
 
+//nolint
 func (err InvalidParamError) Error() string {
 	return fmt.Sprintf("invalid param %s", err.Param)
 }
@@ -203,18 +239,22 @@ func (m *Manager) set(type0, ip string, port uint32, user, password string) erro
 	}
 
 	if !disable && !validIPv4(ip) {
+		notifyAppProxyEnableFailed()
 		return InvalidParamError{"IP"}
 	}
 
 	if !validUser(user) {
+		notifyAppProxyEnableFailed()
 		return InvalidParamError{"User"}
 	}
 
 	if !validPassword(password) {
+		notifyAppProxyEnableFailed()
 		return InvalidParamError{"Password"}
 	}
 
 	if (user == "" && password != "") || (user != "" && password == "") {
+		notifyAppProxyEnableFailed()
 		return errors.New("user and password are not provided at the same time")
 	}
 
@@ -249,15 +289,54 @@ func (m *Manager) set(type0, ip string, port uint32, user, password string) erro
 
 	err := m.saveConfig()
 	if err != nil {
+		notifyAppProxyEnableFailed()
 		return err
 	}
 
 	if disable {
+		err = m.appProxy.StopProxy(0)
+		if err != nil {
+			logger.Warningf("stop proxy failed, err: %v", err)
+			return err
+		}
+		err = m.appProxy.ClearProxy(0)
+		if err != nil {
+			logger.Warningf("clear proxy failed, err: %v", err)
+			return err
+		}
 		return m.removeConf()
 	}
 
 	// enable
-	return m.writeConf()
+	err = m.writeConf()
+	if err != nil {
+		notifyAppProxyEnableFailed()
+	} else {
+		notifyAppProxyEnabled()
+	}
+	settings := proxy.Proxy{
+		ProtoType: type0,
+		Name:      "default",
+		Server:    ip,
+		Port:      int(port),
+		UserName:  user,
+		Password:  password,
+	}
+	buf, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	err = m.appProxy.AddProxy(0, type0, "default", buf)
+	if err != nil {
+		logger.Warningf("add proxy failed, err: %v", err)
+		return err
+	}
+	err = m.appProxy.StartProxy(0, type0, "default", false)
+	if err != nil {
+		logger.Warningf("start proxy failed, err: %v", err)
+		return err
+	}
+	return err
 }
 
 func (m *Manager) writeConf() error {

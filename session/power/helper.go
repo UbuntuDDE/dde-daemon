@@ -20,37 +20,41 @@
 package power
 
 import (
+	"github.com/godbus/dbus"
 	notifications "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.notifications"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil/proxy"
 
 	// system bus
+	daemon "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.daemon"
+	shutdownfront "github.com/linuxdeepin/go-dbus-factory/com.deepin.dde.shutdownfront"
 	libpower "github.com/linuxdeepin/go-dbus-factory/com.deepin.system.power"
-	"github.com/linuxdeepin/go-dbus-factory/net.hadess.sensorproxy"
+	sensorproxy "github.com/linuxdeepin/go-dbus-factory/net.hadess.sensorproxy"
 	ofdbus "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.dbus"
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.login1"
+	login1 "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.login1"
 
 	// session bus
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.display"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.sessionwatcher"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.sessionmanager"
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.screensaver"
-	"github.com/linuxdeepin/go-x11-client"
+	display "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.display"
+	sessionwatcher "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.sessionwatcher"
+	sessionmanager "github.com/linuxdeepin/go-dbus-factory/com.deepin.sessionmanager"
+	screensaver "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.screensaver"
+	x "github.com/linuxdeepin/go-x11-client"
 	"pkg.deepin.io/lib/dbusutil"
 )
 
 type Helper struct {
-	Notifications *notifications.Notifications
+	Notifications notifications.Notifications
 
-	Power         *libpower.Power // sig
-	LoginManager  *login1.Manager // sig
-	SensorProxy   *sensorproxy.SensorProxy
-	SysDBusDaemon *ofdbus.DBus
+	Power         libpower.Power // sig
+	LoginManager  login1.Manager // sig
+	SensorProxy   sensorproxy.SensorProxy
+	SysDBusDaemon ofdbus.DBus
+	Daemon        daemon.Daemon
 
-	SessionManager *sessionmanager.SessionManager
-	SessionWatcher *sessionwatcher.SessionWatcher
-	ScreenSaver    *screensaver.ScreenSaver // sig
-	Display        *display.Display
+	SessionManager sessionmanager.SessionManager
+	SessionWatcher sessionwatcher.SessionWatcher
+	ShutdownFront  shutdownfront.ShutdownFront
+	ScreenSaver    screensaver.ScreenSaver // sig
+	Display        display.Display
 
 	xConn *x.Conn
 }
@@ -73,10 +77,12 @@ func (h *Helper) init(sysBus, sessionBus *dbus.Conn) error {
 	h.LoginManager = login1.NewManager(sysBus)
 	h.SensorProxy = sensorproxy.NewSensorProxy(sysBus)
 	h.SysDBusDaemon = ofdbus.NewDBus(sysBus)
+	h.Daemon = daemon.NewDaemon(sysBus)
 	h.SessionManager = sessionmanager.NewSessionManager(sessionBus)
 	h.ScreenSaver = screensaver.NewScreenSaver(sessionBus)
 	h.Display = display.NewDisplay(sessionBus)
 	h.SessionWatcher = sessionwatcher.NewSessionWatcher(sessionBus)
+	h.ShutdownFront = shutdownfront.NewShutdownFront(sessionBus)
 
 	// init X conn
 	h.xConn, err = x.NewConn()
@@ -92,7 +98,7 @@ func (h *Helper) initSignalExt(systemSigLoop, sessionSigLoop *dbusutil.SignalLoo
 	h.LoginManager.InitSignalExt(systemSigLoop, true)
 	h.Power.InitSignalExt(systemSigLoop, true)
 	h.SensorProxy.InitSignalExt(systemSigLoop, true)
-
+	h.Daemon.InitSignalExt(systemSigLoop, true)
 	// session
 	h.ScreenSaver.InitSignalExt(sessionSigLoop, true)
 	h.SessionWatcher.InitSignalExt(sessionSigLoop, true)
@@ -104,6 +110,7 @@ func (h *Helper) Destroy() {
 	h.LoginManager.RemoveHandler(proxy.RemoveAllHandlers)
 	h.Power.RemoveHandler(proxy.RemoveAllHandlers)
 	h.SensorProxy.RemoveHandler(proxy.RemoveAllHandlers)
+	h.Daemon.RemoveHandler(proxy.RemoveAllHandlers)
 
 	h.ScreenSaver.RemoveHandler(proxy.RemoveAllHandlers)
 	h.SessionWatcher.RemoveHandler(proxy.RemoveAllHandlers)

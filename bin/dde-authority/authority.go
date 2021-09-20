@@ -9,13 +9,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.accounts"
+	"github.com/godbus/dbus"
+	accounts "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.accounts"
 	fprint "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.fprintd"
 	ofdbus "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.dbus"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/pam"
 )
+
+//go:generate dbusutil-gen em -type Authority,PAMTransaction,FPrintTransaction
 
 const (
 	pamConfigDir = "/etc/pam.d"
@@ -32,15 +34,9 @@ type Authority struct {
 	count         uint64
 	mu            sync.Mutex
 	txs           map[uint64]Transaction
-	fprintManager *fprint.Fprintd
-	dbusDaemon    *ofdbus.DBus
-	accounts      *accounts.Accounts
-
-	methods *struct {
-		Start       func() `in:"authType,user,agentObj" out:"transactionObj"`
-		CheckCookie func() `in:"user,cookie" out:"result,authToken"`
-		HasCookie   func() `in:"user" out:"result"`
-	}
+	fprintManager fprint.Fprintd
+	dbusDaemon    ofdbus.DBus
+	accounts      accounts.Accounts
 }
 
 func newAuthority(service *dbusutil.Service) *Authority {
@@ -94,11 +90,12 @@ func (a *Authority) listenDBusSignals() {
 }
 
 const (
-	authTypeFprint   = "fprint"
-	authTypeKeyboard = "keyboard"
+	authTypeFprint = "fprint"
 )
 
-func (a *Authority) Start(sender dbus.Sender, authType, user string, agent dbus.ObjectPath) (dbus.ObjectPath, *dbus.Error) {
+func (a *Authority) Start(sender dbus.Sender, authType, user string,
+	agent dbus.ObjectPath) (transaction dbus.ObjectPath, busErr *dbus.Error) {
+
 	a.service.DelayAutoQuit()
 	if !agent.IsValid() {
 		return "/", dbusutil.ToError(errors.New("agent path is invalid"))
@@ -207,7 +204,7 @@ func (a *Authority) startPAMTx(authType, service, user, sender string) (*PAMTran
 	return tx, nil
 }
 
-func (a *Authority) CheckCookie(user, cookie string) (bool, string, *dbus.Error) {
+func (a *Authority) CheckCookie(user, cookie string) (result bool, authToken string, busErr *dbus.Error) {
 	a.service.DelayAutoQuit()
 	if user == "" || cookie == "" {
 		return false, "", nil
@@ -228,7 +225,7 @@ func (a *Authority) CheckCookie(user, cookie string) (bool, string, *dbus.Error)
 	return false, "", nil
 }
 
-func (a *Authority) HasCookie(user string) (bool, *dbus.Error) {
+func (a *Authority) HasCookie(user string) (result bool, busErr *dbus.Error) {
 	a.service.DelayAutoQuit()
 	if user == "" {
 		return false, nil

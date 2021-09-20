@@ -9,9 +9,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	dbus "github.com/godbus/dbus"
 	"github.com/gosexy/gettext"
 	fprint "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.fprintd"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/dbusutil/proxy"
 	"pkg.deepin.io/lib/strv"
@@ -31,12 +31,9 @@ type FPrintTransaction struct {
 	PropsMu        sync.RWMutex
 	Authenticating bool
 	Sender         string
-	methods        *struct {
-		SetUser func() `in:"user"`
-	}
-	quit       chan struct{}
-	release    chan struct{}
-	devicePath dbus.ObjectPath
+	quit           chan struct{}
+	release        chan struct{}
+	devicePath     dbus.ObjectPath
 }
 
 func (tx *FPrintTransaction) setPropAuthenticating(value bool) {
@@ -66,7 +63,7 @@ func (tx *FPrintTransaction) getUser() string {
 	}
 }
 
-func (tx *FPrintTransaction) getDevice() (*fprint.Device, error) {
+func (tx *FPrintTransaction) getDevice() (fprint.Device, error) {
 	devicePath, err := tx.parent.fprintManager.GetDefaultDevice(0)
 	if err != nil {
 		return nil, err
@@ -188,7 +185,7 @@ func (tx *FPrintTransaction) releaseOtherTx(devPath dbus.ObjectPath) {
 	tx.parent.releaseFprintTransaction(tx.id, devPath)
 }
 
-func (tx *FPrintTransaction) claimDevice(deviceObj *fprint.Device, user string) error {
+func (tx *FPrintTransaction) claimDevice(deviceObj fprint.Device, user string) error {
 	logger.Debug(tx, "claim device")
 
 	caps, err := deviceObj.GetCapabilities(0)
@@ -220,7 +217,7 @@ func (tx *FPrintTransaction) claimDevice(deviceObj *fprint.Device, user string) 
 
 var errClaimLost = errors.New("claim lost")
 
-func (tx *FPrintTransaction) verify(deviceObj *fprint.Device, user, scanType string) error {
+func (tx *FPrintTransaction) verify(deviceObj fprint.Device, user, scanType string) error {
 	if !tx.isClaimOk() {
 		return errClaimLost
 	}
@@ -293,16 +290,12 @@ func (tx *FPrintTransaction) verify(deviceObj *fprint.Device, user, scanType str
 	return errors.New("verify failed")
 }
 
-func shouldLimitVerifyTime(deviceObj *fprint.Device) bool {
+func shouldLimitVerifyTime(deviceObj fprint.Device) bool {
 	path := string(deviceObj.Path_())
-	if filepath.Base(path) == "huawei" {
-		return false
-	}
-	// else fprintd device
-	return true
+	return filepath.Base(path) != "huawei"
 }
 
-func (tx *FPrintTransaction) doVerify(deviceObj *fprint.Device, verifyResultCh chan verifyResult,
+func (tx *FPrintTransaction) doVerify(deviceObj fprint.Device, verifyResultCh chan verifyResult,
 	locale string) (ok, continue0 bool) {
 
 	if !tx.isClaimOk() {

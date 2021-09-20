@@ -22,9 +22,10 @@ package audio
 import (
 	"time"
 
+	"golang.org/x/xerrors"
 	"pkg.deepin.io/dde/daemon/loader"
-	"pkg.deepin.io/lib/log"
 	"pkg.deepin.io/lib/dbusutil"
+	"pkg.deepin.io/lib/log"
 )
 
 var (
@@ -51,9 +52,16 @@ func (*Module) GetDependencies() []string {
 }
 
 func (m *Module) start() error {
+	err := startPulseaudio() // 为了保证蓝牙模块依赖audio模块,并且audio模块启动pulseaudio完成.
+	if err != nil {
+		err = xerrors.Errorf("failed to start pulseaudio: %w", err)
+		logger.Warning(err)
+		return err
+	}
+
 	service := loader.GetService()
 	m.audio = newAudio(service)
-	err := m.audio.init()
+	err = m.audio.init()
 	if err != nil {
 		logger.Warning("failed to init audio module:", err)
 		return nil
@@ -78,16 +86,11 @@ func (m *Module) Start() error {
 	if m.audio != nil {
 		return nil
 	}
-
-	go func() {
-		waitSoundThemePlayerExit()
-		t0 := time.Now()
-		err := m.start()
-		if err != nil {
-			logger.Warning(err)
-		}
-		logger.Info("start audio module cost", time.Since(t0))
-	}()
+	waitSoundThemePlayerExit()
+	err := m.start()
+	if err != nil {
+		logger.Warning(err)
+	}
 	return nil
 }
 

@@ -158,6 +158,84 @@ func (v *User) emitPropChangedUse24HourFormat(value bool) error {
 	return v.service.EmitPropertyChanged(v, "Use24HourFormat", value)
 }
 
+func (v *User) setPropWeekdayFormat(value int32) (changed bool) {
+	if v.WeekdayFormat != value {
+		v.WeekdayFormat = value
+		v.emitPropChangedWeekdayFormat(value)
+		return true
+	}
+	return false
+}
+
+func (v *User) emitPropChangedWeekdayFormat(value int32) error {
+	return v.service.EmitPropertyChanged(v, "WeekdayFormat", value)
+}
+
+func (v *User) setPropShortDateFormat(value int32) (changed bool) {
+	if v.ShortDateFormat != value {
+		v.ShortDateFormat = value
+		v.emitPropChangedShortDateFormat(value)
+		return true
+	}
+	return false
+}
+
+func (v *User) emitPropChangedShortDateFormat(value int32) error {
+	return v.service.EmitPropertyChanged(v, "ShortDateFormat", value)
+}
+
+func (v *User) setPropLongDateFormat(value int32) (changed bool) {
+	if v.LongDateFormat != value {
+		v.LongDateFormat = value
+		v.emitPropChangedLongDateFormat(value)
+		return true
+	}
+	return false
+}
+
+func (v *User) emitPropChangedLongDateFormat(value int32) error {
+	return v.service.EmitPropertyChanged(v, "LongDateFormat", value)
+}
+
+func (v *User) setPropShortTimeFormat(value int32) (changed bool) {
+	if v.ShortTimeFormat != value {
+		v.ShortTimeFormat = value
+		v.emitPropChangedShortTimeFormat(value)
+		return true
+	}
+	return false
+}
+
+func (v *User) emitPropChangedShortTimeFormat(value int32) error {
+	return v.service.EmitPropertyChanged(v, "ShortTimeFormat", value)
+}
+
+func (v *User) setPropLongTimeFormat(value int32) (changed bool) {
+	if v.LongTimeFormat != value {
+		v.LongTimeFormat = value
+		v.emitPropChangedLongTimeFormat(value)
+		return true
+	}
+	return false
+}
+
+func (v *User) emitPropChangedLongTimeFormat(value int32) error {
+	return v.service.EmitPropertyChanged(v, "LongTimeFormat", value)
+}
+
+func (v *User) setPropWeekBegins(value int32) (changed bool) {
+	if v.WeekBegins != value {
+		v.WeekBegins = value
+		v.emitPropChangedWeekBegins(value)
+		return true
+	}
+	return false
+}
+
+func (v *User) emitPropChangedWeekBegins(value int32) error {
+	return v.service.EmitPropertyChanged(v, "WeekBegins", value)
+}
+
 func (v *User) setPropDesktopBackgrounds(value []string) {
 	v.DesktopBackgrounds = value
 	v.emitPropChangedDesktopBackgrounds(value)
@@ -269,6 +347,19 @@ func (v *User) setPropAutomaticLogin(value bool) (changed bool) {
 
 func (v *User) emitPropChangedAutomaticLogin(value bool) error {
 	return v.service.EmitPropertyChanged(v, "AutomaticLogin", value)
+}
+
+func (v *User) setPropWorkspace(value int32) (changed bool) {
+	if v.Workspace != value {
+		v.Workspace = value
+		v.emitPropChangedWorkspace(value)
+		return true
+	}
+	return false
+}
+
+func (v *User) emitPropChangedWorkspace(value int32) error {
+	return v.service.EmitPropertyChanged(v, "Workspace", value)
 }
 
 func (v *User) setPropSystemAccount(value bool) (changed bool) {

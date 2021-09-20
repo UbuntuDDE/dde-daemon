@@ -8,10 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linuxdeepin/go-x11-client"
+	x "github.com/linuxdeepin/go-x11-client"
 	"github.com/linuxdeepin/go-x11-client/ext/xfixes"
 	"pkg.deepin.io/lib/log"
 )
+
+//go:generate dbusutil-gen em -type Manager
 
 var (
 	atomClipboardManager     x.Atom
@@ -22,10 +24,10 @@ var (
 	atomDelete               x.Atom
 	atomInsertProperty       x.Atom
 	atomInsertSelection      x.Atom
-	atomAtomPair             x.Atom
+	atomAtomPair             x.Atom //nolint
 	atomIncr                 x.Atom
 	atomTimestamp            x.Atom
-	atomNull                 x.Atom
+	atomNull                 x.Atom //nolint
 	atomTimestampProp        x.Atom
 	atomFromClipboardManager x.Atom
 
@@ -65,16 +67,11 @@ func (td *TargetData) needINCR() bool {
 type Manager struct {
 	xc        XClient
 	window    x.Window
-	dataWin   x.Window
 	ec        *eventCaptor
 	timestamp x.Timestamp
 
 	contentMu sync.Mutex
 	content   []*TargetData
-
-	methods *struct {
-		RemoveTarget func() `in:"target"`
-	}
 }
 
 func (m *Manager) getTargetData(target x.Atom) *TargetData {

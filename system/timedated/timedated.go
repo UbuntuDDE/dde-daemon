@@ -47,7 +47,7 @@ func init() {
 	loader.Register(NewDaemon(logger))
 }
 
-func (*Daemon) Start() error {
+func (d *Daemon) Start() error {
 	if _manager != nil {
 		return nil
 	}
@@ -70,6 +70,7 @@ func (*Daemon) Start() error {
 		return err
 	}
 
+	_manager.start()
 	return nil
 }
 

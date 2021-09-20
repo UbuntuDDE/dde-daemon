@@ -24,7 +24,7 @@ import (
 	"strconv"
 	"sync"
 
-	"pkg.deepin.io/lib/dbus1"
+	dbus "github.com/godbus/dbus"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/pulse"
 )
@@ -51,15 +51,6 @@ type Source struct {
 	ActivePort Port
 	// 声卡的索引
 	Card uint32
-
-	methods *struct {
-		SetVolume  func() `in:"value,isPlay"`
-		SetBalance func() `in:"value,isPlay"`
-		SetFade    func() `in:"value"`
-		SetMute    func() `in:"value"`
-		SetPort    func() `in:"name"`
-		GetMeter   func() `out:"meter"`
-	}
 }
 
 func newSource(sourceInfo *pulse.Source, audio *Audio) *Source {
@@ -68,23 +59,57 @@ func newSource(sourceInfo *pulse.Source, audio *Audio) *Source {
 		index:   sourceInfo.Index,
 		service: audio.service,
 	}
+	if !isPhysicalDevice(sourceInfo.Name) {
+		masterSourceInfo := audio.getSourceInfoByName(sourceInfo.Proplist["device.master_device"])
+		if masterSourceInfo == nil {
+			logger.Warningf("cannot get master source for %s", sourceInfo.Name)
+		} else {
+			sourceInfo.Card = masterSourceInfo.Card
+			sourceInfo.Ports = masterSourceInfo.Ports
+			sourceInfo.ActivePort = masterSourceInfo.ActivePort
+			logger.Debugf("create reducing noise source on %s", masterSourceInfo.Name)
+		}
+	}
+
 	s.update(sourceInfo)
 	return s
 }
 
+// 检测端口是否被禁用
+func (s *Source) CheckPort() *dbus.Error {
+	enabled, err := s.audio.IsPortEnabled(s.Card, s.ActivePort.Name)
+	if err != nil {
+		return err
+	}
+
+	if !enabled {
+		return dbusutil.ToError(fmt.Errorf("port<%d:%s> is disabled", s.Card, s.ActivePort.Name))
+	}
+
+	return nil
+}
+
 // 如何反馈输入音量？
-func (s *Source) SetVolume(v float64, isPlay bool) *dbus.Error {
-	if !isVolumeValid(v) {
-		return dbusutil.ToError(fmt.Errorf("invalid volume value: %v", v))
+func (s *Source) SetVolume(value float64, isPlay bool) *dbus.Error {
+	err := s.CheckPort()
+	if err != nil {
+		return err
 	}
 
-	if v == 0 {
-		v = 0.001
+	logger.Debugf("set source %q volume %f", s.Name, value)
+	if !isVolumeValid(value) {
+		return dbusutil.ToError(fmt.Errorf("invalid volume value: %v", value))
+	}
+
+	if value == 0 {
+		value = 0.001
 	}
 	s.PropsMu.RLock()
-	cv := s.cVolume.SetAvg(v)
+	cv := s.cVolume.SetAvg(value)
 	s.PropsMu.RUnlock()
 	s.audio.context().SetSourceVolumeByIndex(s.index, cv)
+
+	GetConfigKeeper().SetVolume(s.audio.getCardNameById(s.Card), s.ActivePort.Name, value)
 
 	if isPlay {
 		playFeedback()
@@ -92,28 +117,41 @@ func (s *Source) SetVolume(v float64, isPlay bool) *dbus.Error {
 	return nil
 }
 
-func (s *Source) SetBalance(v float64, isPlay bool) *dbus.Error {
-	if v < -1.00 || v > 1.00 {
-		return dbusutil.ToError(fmt.Errorf("invalid volume value: %v", v))
+func (s *Source) SetBalance(value float64, isPlay bool) *dbus.Error {
+	err := s.CheckPort()
+	if err != nil {
+		return err
+	}
+
+	if value < -1.00 || value > 1.00 {
+		return dbusutil.ToError(fmt.Errorf("invalid volume value: %v", value))
 	}
 
 	s.PropsMu.RLock()
-	cv := s.cVolume.SetBalance(s.channelMap, v)
+	cv := s.cVolume.SetBalance(s.channelMap, value)
 	s.PropsMu.RUnlock()
 	s.audio.context().SetSourceVolumeByIndex(s.index, cv)
+
+	GetConfigKeeper().SetBalance(s.audio.getCardNameById(s.Card), s.ActivePort.Name, value)
+
 	if isPlay {
 		playFeedback()
 	}
 	return nil
 }
 
-func (s *Source) SetFade(v float64) *dbus.Error {
-	if v < -1.00 || v > 1.00 {
-		return dbusutil.ToError(fmt.Errorf("invalid volume value: %v", v))
+func (s *Source) SetFade(value float64) *dbus.Error {
+	err := s.CheckPort()
+	if err != nil {
+		return err
+	}
+
+	if value < -1.00 || value > 1.00 {
+		return dbusutil.ToError(fmt.Errorf("invalid volume value: %v", value))
 	}
 
 	s.PropsMu.RLock()
-	cv := s.cVolume.SetFade(s.channelMap, v)
+	cv := s.cVolume.SetFade(s.channelMap, value)
 	s.PropsMu.RUnlock()
 	s.audio.context().SetSourceVolumeByIndex(s.index, cv)
 
@@ -121,9 +159,45 @@ func (s *Source) SetFade(v float64) *dbus.Error {
 	return nil
 }
 
-func (s *Source) SetMute(v bool) *dbus.Error {
-	s.audio.context().SetSourceMuteByIndex(s.index, v)
-	if !v {
+// 设置同时设置音量和平衡
+//
+// v: volume音量值
+// b: balance左右平衡值
+// f: fade前后平衡值
+//
+func (s *Source) setVBF(v, b, f float64) *dbus.Error {
+	if v < -1.00 || v > 1.00 {
+		return dbusutil.ToError(fmt.Errorf("invalid volume value: %v", v))
+	}
+
+	if b < -1.00 || b > 1.00 {
+		return dbusutil.ToError(fmt.Errorf("invalid balance value: %v", b))
+	}
+
+	if f < -1.00 || b > 1.00 {
+		return dbusutil.ToError(fmt.Errorf("invalid fade value: %v", f))
+	}
+
+	s.PropsMu.RLock()
+	cv := s.cVolume.SetAvg(v)
+	cv = cv.SetBalance(s.channelMap, b)
+	cv = cv.SetFade(s.channelMap, f)
+	s.PropsMu.RUnlock()
+	s.audio.context().SetSourceVolumeByIndex(s.index, cv)
+
+	return nil
+}
+
+func (s *Source) SetMute(value bool) *dbus.Error {
+	err := s.CheckPort()
+	if err != nil {
+		return err
+	}
+
+	s.audio.context().SetSourceMuteByIndex(s.index, value)
+	GetConfigKeeper().SetMuteInput(value)
+
+	if !value {
 		playFeedback()
 	}
 	return nil
@@ -134,7 +208,7 @@ func (s *Source) SetPort(name string) *dbus.Error {
 	return nil
 }
 
-func (s *Source) GetMeter() (dbus.ObjectPath, *dbus.Error) {
+func (s *Source) GetMeter() (meter dbus.ObjectPath, busErr *dbus.Error) {
 	id := fmt.Sprintf("source%d", s.index)
 	s.audio.mu.Lock()
 	m, ok := s.audio.meters[id]
@@ -172,8 +246,20 @@ func (*Source) GetInterfaceName() string {
 }
 
 func (s *Source) update(sourceInfo *pulse.Source) {
-	s.PropsMu.Lock()
+	// 如果是虚拟通道，则将card和ports等设为对应主通道的值，这是为了能够正常使用降噪的训通道
+	if !isPhysicalDevice(sourceInfo.Name) {
+		masterSourceInfo := s.audio.getSourceInfoByName(sourceInfo.Proplist["device.master_device"])
+		if masterSourceInfo == nil {
+			logger.Warningf("cannot get master source for %s", sourceInfo.Name)
+		} else {
+			sourceInfo.Card = masterSourceInfo.Card
+			sourceInfo.Ports = masterSourceInfo.Ports
+			sourceInfo.ActivePort = masterSourceInfo.ActivePort
+			logger.Debugf("create reducing noise source on %s", masterSourceInfo.Name)
+		}
+	}
 
+	s.PropsMu.Lock()
 	s.cVolume = sourceInfo.Volume
 	s.channelMap = sourceInfo.ChannelMap
 	s.Name = sourceInfo.Name
@@ -190,13 +276,23 @@ func (s *Source) update(sourceInfo *pulse.Source) {
 	s.setPropSupportBalance(true)
 	s.setPropBalance(sourceInfo.Volume.Balance(sourceInfo.ChannelMap))
 
-	s.setPropActivePort(toPort(sourceInfo.ActivePort))
-
 	var ports []Port
 	for _, p := range sourceInfo.Ports {
 		ports = append(ports, toPort(p))
 	}
+
 	s.setPropPorts(ports)
+	activePortChanged := s.setPropActivePort(toPort(sourceInfo.ActivePort))
 
 	s.PropsMu.Unlock()
+
+	if activePortChanged && s.audio.defaultSourceName == s.Name {
+		logger.Debugf("default source update active port %s", sourceInfo.ActivePort.Name)
+		s.audio.resumeSourceConfig(s, isPhysicalDevice(s.Name))
+	}
+}
+
+func (s *Source) setMute(v bool) {
+	logger.Debugf("Source #%d setMute %v", s.index, v)
+	s.audio.context().SetSourceMuteByIndex(s.index, v)
 }

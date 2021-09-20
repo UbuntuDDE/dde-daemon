@@ -22,13 +22,13 @@ package dock
 import (
 	"errors"
 	"os"
-	"pkg.deepin.io/lib/procfs"
 	"syscall"
 	"time"
 
+	"github.com/godbus/dbus"
 	"github.com/linuxdeepin/go-x11-client/util/wm/ewmh"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
+	"pkg.deepin.io/lib/procfs"
 )
 
 func (e *AppEntry) GetInterfaceName() string {
@@ -134,7 +134,10 @@ func (entry *AppEntry) PresentWindows() *dbus.Error {
 	windowIds := entry.getWindowIds()
 	entry.PropsMu.RUnlock()
 	if len(windowIds) > 0 {
-		entry.manager.wm.PresentWindows(dbus.FlagNoAutoStart, windowIds)
+		err := entry.manager.wm.PresentWindows(dbus.FlagNoAutoStart, windowIds)
+		if err != nil {
+			logger.Warning("PresentWindows error:", err)
+		}
 	}
 	return nil
 }
@@ -210,13 +213,12 @@ func killProcess(pid uint) error {
 	return nil
 }
 
-func (entry *AppEntry) GetAllowedCloseWindows() ([]uint32, *dbus.Error) {
+func (entry *AppEntry) GetAllowedCloseWindows() (windows []uint32, busErr *dbus.Error) {
 	entry.PropsMu.RLock()
-	ret := make([]uint32, len(entry.windows))
 	winIds := entry.getAllowedCloseWindows()
-	for idx, winId := range winIds {
-		ret[idx] = uint32(winId)
+	for _, id := range winIds {
+		windows = append(windows, uint32(id))
 	}
 	entry.PropsMu.RUnlock()
-	return ret, nil
+	return windows, nil
 }

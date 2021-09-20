@@ -21,96 +21,14 @@ package audio
 
 import (
 	"os"
+	"os/exec"
 	"time"
 
+	dbus "github.com/godbus/dbus"
 	soundthemeplayer "github.com/linuxdeepin/go-dbus-factory/com.deepin.api.soundthemeplayer"
 	"pkg.deepin.io/lib/asound"
-	dbus "pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/pulse"
 )
-
-func (a *Audio) applyConfig() {
-	cfg, err := readConfig()
-	if err != nil {
-		if !os.IsNotExist(err) {
-			logger.Warning("Read config info failed:", err)
-		}
-	}
-	logger.Debugf("load config: %+v", cfg)
-
-	if !a.isConfigValid(cfg) {
-		logger.Warning("Invalid config:", cfg.string())
-		a.trySelectBestPort()
-		return
-	}
-
-	if cfg == nil {
-		return
-	}
-	for _, card := range a.ctx.GetCardList() {
-		profileName, ok := cfg.Profiles[card.Name]
-		if !ok {
-			continue
-		}
-
-		if card.ActiveProfile.Name != profileName {
-			card.SetProfile(profileName)
-		}
-	}
-
-	var sinkValidity = true
-	for _, s := range a.ctx.GetSinkList() {
-		if s.Name == cfg.Sink {
-			if len(cfg.SinkPort) == 0 {
-				sinkValidity = false
-				break
-			}
-			port := pulse.PortInfos(s.Ports).Get(cfg.SinkPort)
-			// if port invalid, nothing to do.
-			// TODO: some device port can play sound when state is 'NO', how to fix?
-			if port == nil {
-				sinkValidity = false
-				break
-			}
-
-			if s.ActivePort.Name != cfg.SinkPort {
-				a.ctx.SetSinkPortByIndex(s.Index, cfg.SinkPort)
-			}
-			cv := s.Volume.SetAvg(cfg.SinkVolume)
-			a.ctx.SetSinkVolumeByIndex(s.Index, cv)
-			break
-		}
-	}
-	logger.Debug("Audio config sink validity:", sinkValidity, cfg.Sink)
-	if sinkValidity {
-		a.ctx.SetDefaultSink(cfg.Sink)
-	}
-
-	var sourceValidity = true
-	for _, s := range a.ctx.GetSourceList() {
-		if s.Name == cfg.Source {
-			if len(cfg.SourcePort) == 0 {
-				sourceValidity = false
-				continue
-			}
-			port := pulse.PortInfos(s.Ports).Get(cfg.SourcePort)
-			if port == nil {
-				sourceValidity = false
-				continue
-			}
-			if s.ActivePort.Name != cfg.SourcePort {
-				a.ctx.SetSourcePortByIndex(s.Index, cfg.SourcePort)
-			}
-			cv := s.Volume.SetAvg(cfg.SourceVolume)
-			a.ctx.SetSourceVolumeByIndex(s.Index, cv)
-			break
-		}
-	}
-	logger.Debug("Audio config source validity:", sourceValidity, cfg.Source)
-	if sourceValidity {
-		a.ctx.SetDefaultSource(cfg.Source)
-	}
-}
 
 func (a *Audio) trySelectBestPort() {
 	logger.Debug("trySelectBestPort")
@@ -202,20 +120,39 @@ func (a *Audio) doSaveConfig() {
 		info.SourceVolume = sourceInfo.Volume.Avg()
 		break
 	}
-
 	_, err := readConfig()
 	if err != nil && !os.IsNotExist(err) {
 		logger.Warning(err)
 	}
-	err = saveConfig(&info)
-	if err != nil {
-		logger.Warning("Save config file failed:", info.string(), err)
-	}
-
+	if len(info.SourcePort) != 0 {
+		err = saveConfig(&info)
+		if err != nil {
+			logger.Warning("save config file failed:", info.string(), err)
+		}
+        }
 	err = a.saveAudioState()
 	if err != nil {
 		logger.Warning(err)
 	}
+
+}
+
+func (a *Audio) setReduceNoise(enable bool) error {
+	logger.Debug("set reduce noise :", enable)
+	var err error
+	var out []byte
+	if enable {
+		out, err = exec.Command("/bin/sh", "/usr/share/dde-daemon/audio/echoCancelEnable.sh").CombinedOutput()
+		if err != nil {
+			logger.Warningf("failed to enable reduce noise %v %s", err, out)
+		}
+	} else {
+		out, err = exec.Command("pactl", "unload-module", "module-echo-cancel").CombinedOutput()
+		if err != nil {
+			logger.Warningf("failed to disable reduce noise %v %s", err, out)
+		}
+	}
+	return err
 }
 
 func (a *Audio) saveAudioState() error {
@@ -267,83 +204,4 @@ func toALSACardId(idx string) (cardId string, err error) {
 
 	cardId = cardInfo.GetID()
 	return
-}
-
-func (a *Audio) isConfigValid(cfg *config) bool {
-	if cfg == nil {
-		return false
-	}
-	if len(cfg.Profiles) == 0 {
-		return false
-	}
-
-	// check cfg.Profiles
-	var validProfileCount int
-	for _, card := range a.ctx.GetCardList() {
-		cardProfile, ok := cfg.Profiles[card.Name]
-		if !ok {
-			continue
-		}
-		// find cardProfile in card.Profiles
-		var found bool
-		for _, profile := range card.Profiles {
-			if profile.Name == cardProfile {
-				found = true
-				break
-			}
-		}
-
-		if found {
-			validProfileCount++
-		} else {
-			// cardProfile is invalid
-			return false
-		}
-	}
-	if validProfileCount != len(cfg.Profiles) {
-		return false
-	}
-
-	// check cfg.Sink and cfg.SinkPort
-	var sinkValid bool
-	for _, sink := range a.ctx.GetSinkList() {
-		if sink.Name != cfg.Sink {
-			continue
-		}
-
-		if len(cfg.SinkPort) == 0 {
-			sinkValid = true
-			break
-		}
-
-		for _, port := range sink.Ports {
-			if port.Name == cfg.SinkPort {
-				sinkValid = true
-			}
-		}
-		break
-	}
-	if !sinkValid {
-		return false
-	}
-
-	// check cfg.Source and cfg.SourcePort
-	var sourceValid bool
-	for _, source := range a.ctx.GetSourceList() {
-		if source.Name != cfg.Source {
-			continue
-		}
-		if len(cfg.SourcePort) == 0 {
-			sourceValid = true
-			break
-		}
-
-		for _, port := range source.Ports {
-			if port.Name == cfg.SourcePort {
-				sourceValid = true
-			}
-		}
-		break
-	}
-	return sourceValid
 }

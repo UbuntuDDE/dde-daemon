@@ -28,11 +28,11 @@ import (
 	"sync"
 	"time"
 
+	dbus "github.com/godbus/dbus"
 	"pkg.deepin.io/dde/api/powersupply"
 	"pkg.deepin.io/dde/api/powersupply/battery"
-	"pkg.deepin.io/gir/gudev-1.0"
+	gudev "pkg.deepin.io/gir/gudev-1.0"
 	"pkg.deepin.io/lib/arch"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 )
 
@@ -45,6 +45,7 @@ func init() {
 }
 
 //go:generate dbusutil-gen -type Manager,Battery -import pkg.deepin.io/dde/api/powersupply/battery manager.go battery.go
+//go:generate dbusutil-gen em -type Manager,Battery
 
 // https://www.kernel.org/doc/Documentation/power/power_supply_class.txt
 type Manager struct {
@@ -59,6 +60,9 @@ type Manager struct {
 	// 初始化是否完成
 	initDone bool
 
+	// CPU操作接口
+	cpus *CpuHandlers
+
 	PropsMu      sync.RWMutex
 	OnBattery    bool
 	HasLidSwitch bool
@@ -70,7 +74,7 @@ type Manager struct {
 	BatteryTimeToFull  uint64
 	// 电池容量
 	BatteryCapacity float64
-	
+
 	// 开启和关闭节能模式
 	PowerSavingModeEnabled bool `prop:"access:rw"`
 
@@ -83,11 +87,19 @@ type Manager struct {
 	// 开启节能模式时降低亮度的百分比值
 	PowerSavingModeBrightnessDropPercent uint32 `prop:"access:rw"`
 
-	methods *struct {
-		GetBatteries func() `out:"batteries"`
-		Debug        func() `in:"cmd"`
-	}
+	// CPU频率调节模式，支持powersave和performance
+	CpuGovernor string
 
+	// CPU频率增强是否开启
+	CpuBoost bool
+
+	// 是否支持Boost
+	IsHighPerformanceSupported bool
+
+	// 当前模式
+	Mode string
+
+	// nolint
 	signals *struct {
 		BatteryDisplayUpdate struct {
 			timestamp int64
@@ -110,6 +122,7 @@ func newManager(service *dbusutil.Service) (*Manager, error) {
 	m := &Manager{
 		service:           service,
 		BatteryPercentage: 100,
+		cpus:              NewCpuHandlers(),
 	}
 	err := m.init()
 	if err != nil {
@@ -163,15 +176,10 @@ func (m *Manager) initAC(devices []*gudev.Device) {
 		if noUEvent {
 			go func() {
 				c := time.Tick(2 * time.Second)
-				for {
-					select {
-					case _, ok := <-c:
-						if !ok {
-							logger.Error("Invalid ticker event")
-							return
-						}
-
-						m.RefreshMains()
+				for range c {
+					err := m.RefreshMains()
+					if err != nil {
+						logger.Warning(err)
 					}
 				}
 			}()
@@ -195,6 +203,15 @@ func (m *Manager) init() error {
 	m.PowerSavingModeAuto = cfg.PowerSavingModeAuto                                   // 自动切换节能模式，依据为是否插拔电源
 	m.PowerSavingModeAutoWhenBatteryLow = cfg.PowerSavingModeAutoWhenBatteryLow       // 低电量时自动开启
 	m.PowerSavingModeBrightnessDropPercent = cfg.PowerSavingModeBrightnessDropPercent // 开启节能模式时降低亮度的百分比值
+	m.Mode = cfg.Mode
+
+	// 恢复配置
+	err := m.doSetMode(m.Mode)
+	if err != nil {
+		logger.Warning(err)
+	} else {
+		logger.Debugf("init mode %s", m.Mode)
+	}
 
 	m.initAC(devices)
 	m.initBatteries(devices)
@@ -206,6 +223,17 @@ func (m *Manager) init() error {
 	m.initDone = true
 	// init LMT config
 	m.updatePowerSavingMode()
+
+	m.IsHighPerformanceSupported = m.cpus.IsBoostFileExist()
+	m.CpuBoost, err = m.cpus.GetBoostEnabled()
+	if err != nil {
+		logger.Warning(err)
+	}
+
+	m.CpuGovernor, err = m.cpus.GetGovernor()
+	if err != nil {
+		logger.Warning(err)
+	}
 
 	return nil
 }
@@ -326,11 +354,17 @@ func (m *Manager) removeBattery(dev *gudev.Device) {
 }
 
 func (m *Manager) emitBatteryAdded(bat *Battery) {
-	m.service.Emit(m, "BatteryAdded", bat.getObjPath())
+	err := m.service.Emit(m, "BatteryAdded", bat.getObjPath())
+	if err != nil {
+		logger.Warning(err)
+	}
 }
 
 func (m *Manager) emitBatteryRemoved(bat *Battery) {
-	m.service.Emit(m, "BatteryRemoved", bat.getObjPath())
+	err := m.service.Emit(m, "BatteryRemoved", bat.getObjPath())
+	if err != nil {
+		logger.Warning(err)
+	}
 }
 
 func (m *Manager) destroy() {
@@ -355,6 +389,7 @@ type Config struct {
 	PowerSavingModeAuto                  bool
 	PowerSavingModeAutoWhenBatteryLow    bool
 	PowerSavingModeBrightnessDropPercent uint32
+	Mode                                 string
 }
 
 func loadConfig() (*Config, error) {
@@ -384,6 +419,7 @@ func loadConfigSafe() *Config {
 			PowerSavingModeEnabled:               false,
 			PowerSavingModeAutoWhenBatteryLow:    false,
 			PowerSavingModeBrightnessDropPercent: 20,
+			Mode:                                 "balance",
 		}
 	}
 	// 新增字段后第一次启动时,缺少两个新增字段的json,导致亮度下降百分比字段默认为0,导致与默认值不符,需要处理
@@ -391,6 +427,10 @@ func loadConfigSafe() *Config {
 	// 正常情况下该字段范围为10-40,只有在该情况下会出现0的可能
 	if cfg.PowerSavingModeBrightnessDropPercent == 0 {
 		cfg.PowerSavingModeBrightnessDropPercent = 20
+	}
+
+	if cfg.Mode == "" {
+		cfg.Mode = "balance"
 	}
 	return cfg
 }
@@ -404,6 +444,7 @@ func (m *Manager) saveConfig() error {
 	cfg.PowerSavingModeEnabled = m.PowerSavingModeEnabled
 	cfg.PowerSavingModeAutoWhenBatteryLow = m.PowerSavingModeAutoWhenBatteryLow
 	cfg.PowerSavingModeBrightnessDropPercent = m.PowerSavingModeBrightnessDropPercent
+	cfg.Mode = m.Mode
 	m.PropsMu.RUnlock()
 
 	dir := filepath.Dir(configFile)
@@ -417,4 +458,84 @@ func (m *Manager) saveConfig() error {
 		return err
 	}
 	return ioutil.WriteFile(configFile, content, 0644)
+}
+
+func (m *Manager) doSetMode(mode string) error {
+	var err error
+	switch mode {
+	case "balance": // governor=performance boost=false
+		m.setPropPowerSavingModeEnabled(false)
+		if m.isCpuGovernorSupported("performance") {
+			err = m.doSetCpuGovernor("performance")
+		}
+		if err == nil && m.IsHighPerformanceSupported {
+			err = m.doSetCpuBoost(false)
+		}
+	case "powersave": // governor=powersave boost=false
+		m.setPropPowerSavingModeEnabled(true)
+		if m.isCpuGovernorSupported("powersave") {
+			err = m.doSetCpuGovernor("powersave")
+		}
+		if err == nil && m.IsHighPerformanceSupported {
+			err = m.doSetCpuBoost(false)
+		}
+	case "performance": // governor=performance boost=true
+		if !m.IsHighPerformanceSupported {
+			err = dbusutil.MakeErrorf(m, "PowerMode", "%q mode is not supported", mode)
+			break
+		}
+		m.setPropPowerSavingModeEnabled(false)
+		if m.isCpuGovernorSupported("performance") {
+			err = m.doSetCpuGovernor("performance")
+		}
+		if err == nil {
+			err = m.doSetCpuBoost(true)
+		}
+
+	default:
+		err = dbusutil.MakeErrorf(m, "PowerMode", "%q mode is not supported", mode)
+	}
+
+	if err == nil {
+		m.setPropMode(mode)
+	}
+
+	return err
+}
+
+func (m *Manager) isCpuGovernorSupported(governor string) bool {
+	availableGovernors, err := m.cpus.GetAvailableGovernors()
+	if err != nil {
+		logger.Warning(err)
+		return false
+	}
+
+	if availableGovernors == nil {
+		logger.Warning("no available governor")
+		return false
+	}
+
+	_, ok := availableGovernors[governor]
+	if !ok {
+		logger.Warningf("%q governor is not available", governor)
+		return false
+	}
+
+	return true
+}
+
+func (m *Manager) doSetCpuBoost(enabled bool) error {
+	err := m.cpus.SetBoostEnabled(enabled)
+	if err == nil {
+		m.setPropCpuBoost(enabled)
+	}
+	return err
+}
+
+func (m *Manager) doSetCpuGovernor(governor string) error {
+	err := m.cpus.SetGovernor(governor)
+	if err == nil {
+		m.setPropCpuGovernor(governor)
+	}
+	return err
 }

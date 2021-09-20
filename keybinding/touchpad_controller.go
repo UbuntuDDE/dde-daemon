@@ -20,13 +20,13 @@
 package keybinding
 
 import (
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.inputdevices"
+	"github.com/godbus/dbus"
+	inputdevices "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.inputdevices"
 	. "pkg.deepin.io/dde/daemon/keybinding/shortcuts"
-	"pkg.deepin.io/lib/dbus1"
 )
 
 type TouchPadController struct {
-	touchPad *inputdevices.TouchPad
+	touchPad inputdevices.TouchPad
 }
 
 func NewTouchPadController(sessionConn *dbus.Conn) *TouchPadController {
@@ -42,11 +42,20 @@ func (*TouchPadController) Name() string {
 func (c *TouchPadController) ExecCmd(cmd ActionCmd) error {
 	switch cmd {
 	case TouchpadToggle:
-		c.toggle()
+		err := c.toggle()
+		if err != nil {
+			return err
+		}
 	case TouchpadOn:
-		c.enable(true)
+		err := c.enable(true)
+		if err != nil {
+			return err
+		}
 	case TouchpadOff:
-		c.enable(false)
+		err := c.enable(false)
+		if err != nil {
+			return err
+		}
 	default:
 		return ErrInvalidActionCmd{cmd}
 	}

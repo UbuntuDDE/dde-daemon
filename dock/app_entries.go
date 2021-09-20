@@ -25,9 +25,8 @@ import (
 	"reflect"
 	"sync"
 
+	"github.com/godbus/dbus"
 	x "github.com/linuxdeepin/go-x11-client"
-
-	"pkg.deepin.io/lib/dbus1"
 )
 
 type AppEntries struct {
@@ -151,7 +150,7 @@ func (entries *AppEntries) FilterDocked() (dockedEntries []*AppEntry) {
 
 	for _, entry := range entries.items {
 		entry.PropsMu.RLock()
-		if entry.appInfo != nil && entry.IsDocked == true {
+		if entry.appInfo != nil && entry.IsDocked {
 			dockedEntries = append(dockedEntries, entry)
 		}
 		entry.PropsMu.RUnlock()

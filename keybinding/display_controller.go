@@ -20,23 +20,39 @@
 package keybinding
 
 import (
-	"pkg.deepin.io/gir/gio-2.0"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.display"
-	"github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.helper.backlight"
+	"github.com/godbus/dbus"
+	display "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.display"
+	backlight "github.com/linuxdeepin/go-dbus-factory/com.deepin.daemon.helper.backlight"
 	. "pkg.deepin.io/dde/daemon/keybinding/shortcuts"
-	"pkg.deepin.io/lib/dbus1"
+	"pkg.deepin.io/gir/gio-2.0"
+)
+
+const (
+	gsKeyOsdAdjustBrightnessState = "osd-adjust-brightness-enabled"
+)
+
+type OsdBrightnessState int32
+
+// Osd亮度调节控制
+const (
+	BrightnessAdjustEnable OsdBrightnessState = iota
+	BrightnessAdjustForbidden
+	BrightnessAdjustHidden
 )
 
 type DisplayController struct {
-	display         *display.Display
-	backlightHelper *backlight.Backlight
+	display         display.Display
+	backlightHelper backlight.Backlight
+	gsKeyboard      *gio.Settings
 }
 
-func NewDisplayController(backlightHelper *backlight.Backlight, sessionConn *dbus.Conn) *DisplayController {
-	return &DisplayController{
+func NewDisplayController(backlightHelper backlight.Backlight, sessionConn *dbus.Conn) *DisplayController {
+	c := &DisplayController{
 		backlightHelper: backlightHelper,
 		display:         display.NewDisplay(sessionConn),
 	}
+	c.gsKeyboard = gio.NewSettings(gsSchemaKeyboard)
+	return c
 }
 
 func (*DisplayController) Name() string {
@@ -70,28 +86,31 @@ func (c *DisplayController) changeBrightness(raised bool) error {
 	if !raised {
 		osd = "BrightnessDown"
 	}
+	var state = OsdBrightnessState(c.gsKeyboard.GetEnum(gsKeyOsdAdjustBrightnessState))
 
-	gs := gio.NewSettings("com.deepin.dde.power")
-	autoAdjustBrightnessEnabled := gs.GetBoolean(gsKeyAmbientLightAdjustBrightness)
-	if autoAdjustBrightnessEnabled {
-		gs.SetBoolean(gsKeyAmbientLightAdjustBrightness, false)
-	}
-	gs.Unref()
+	// 只有当OsdAdjustBrightnessState的值为BrightnessAdjustEnable时，才会去执行调整亮度的操作
+	if BrightnessAdjustEnable == state {
+		gs := gio.NewSettings("com.deepin.dde.power")
+		autoAdjustBrightnessEnabled := gs.GetBoolean(gsKeyAmbientLightAdjustBrightness)
+		if autoAdjustBrightnessEnabled {
+			gs.SetBoolean(gsKeyAmbientLightAdjustBrightness, false)
+		}
+		gs.Unref()
 
-	err := c.display.ChangeBrightness(dbus.FlagNoAutoStart, raised)
-	if err != nil {
-		return err
+		err := c.display.ChangeBrightness(dbus.FlagNoAutoStart, raised)
+		if err != nil {
+			return err
+		}
+	} else if BrightnessAdjustForbidden == state {
+		if raised {
+			osd = "BrightnessUpAsh"
+		} else {
+			osd = "BrightnessDownAsh"
+		}
+	} else {
+		return nil
 	}
 
 	showOSD(osd)
-	return nil
-}
-
-
-func (c *DisplayController) switchAdjustBrightness() error {
-	gs := gio.NewSettings("com.deepin.dde.power")
-	defer gs.Unref()
-	value := gs.GetBoolean(gsKeyAmbientLightAdjustBrightness)
-	gs.SetBoolean(gsKeyAmbientLightAdjustBrightness, !value)
 	return nil
 }

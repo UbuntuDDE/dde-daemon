@@ -24,9 +24,9 @@ import (
 	"errors"
 	"time"
 
+	"github.com/godbus/dbus"
 	"pkg.deepin.io/dde/daemon/appearance/background"
 	"pkg.deepin.io/dde/daemon/loader"
-	"pkg.deepin.io/lib/dbus1"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/log"
 )
@@ -58,11 +58,11 @@ func HandlePrepareForSleep(sleep bool) {
 	if sleep {
 		return
 	}
-	cfg, err := _m.doUnmarshalWallpaperSlideshow(_m.WallpaperSlideShow.Get())
+	cfg, err := doUnmarshalWallpaperSlideshow(_m.WallpaperSlideShow.Get())
 	if err == nil {
-		for icfg := range cfg {
-			if cfg[icfg] == wsPolicyWakeup {
-				_m.autoChangeBg(icfg, time.Now())
+		for monitorSpace := range cfg {
+			if cfg[monitorSpace] == wsPolicyWakeup {
+				_m.autoChangeBg(monitorSpace, time.Now())
 			}
 		}
 	}
@@ -109,7 +109,10 @@ func (*Module) start() error {
 	err = service.RequestName(dbusServiceName)
 	if err != nil {
 		_m.destroy()
-		service.StopExport(_m)
+		err = service.StopExport(_m)
+		if err != nil {
+			return err
+		}
 		return err
 	}
 
@@ -133,16 +136,7 @@ func (m *Module) Start() error {
 	if _m != nil {
 		return nil
 	}
-
-	go func() {
-		t0 := time.Now()
-		err := m.start()
-		if err != nil {
-			logger.Warning(err)
-		}
-		logger.Info("start appearance module cost", time.Since(t0))
-	}()
-	return nil
+	return m.start()
 }
 
 func (*Module) Stop() error {
@@ -152,7 +146,10 @@ func (*Module) Stop() error {
 
 	_m.destroy()
 	service := loader.GetService()
-	service.StopExport(_m)
+	err := service.StopExport(_m)
+	if err != nil {
+		return err
+	}
 	_m = nil
 	return nil
 }

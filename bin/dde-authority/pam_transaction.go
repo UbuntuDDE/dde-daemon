@@ -7,7 +7,7 @@ import (
 	"errors"
 	"sync"
 
-	"pkg.deepin.io/lib/dbus1"
+	"github.com/godbus/dbus"
 	"pkg.deepin.io/lib/dbusutil"
 	"pkg.deepin.io/lib/pam"
 )
@@ -17,11 +17,7 @@ type PAMTransaction struct {
 	PropsMu        sync.RWMutex
 	Authenticating bool
 	Sender         string
-	methods        *struct {
-		SetUser func() `in:"user"`
-	}
-
-	core *pam.Transaction
+	core           *pam.Transaction
 }
 
 func (tx *PAMTransaction) setPropAuthenticating(value bool) {
@@ -80,7 +76,7 @@ func genCookie() (string, error) {
 	}
 
 	hash := sha256.New()
-	hash.Write(buf)
+	_, _ = hash.Write(buf)
 	encoded := base64.StdEncoding.EncodeToString(hash.Sum(nil))
 	return encoded, nil
 }

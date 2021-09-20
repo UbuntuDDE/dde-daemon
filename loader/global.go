@@ -27,19 +27,17 @@ import (
 )
 
 var loaderInitializer sync.Once
+var _loader *Loader
 
-var getLoader = func() func() *Loader {
-	var loader *Loader
-	return func() *Loader {
-		loaderInitializer.Do(func() {
-			loader = &Loader{
-				modules: Modules{},
-				log:     log.NewLogger("daemon/loader"),
-			}
-		})
-		return loader
-	}
-}()
+func getLoader() *Loader {
+	loaderInitializer.Do(func() {
+		_loader = &Loader{
+			modules: Modules{},
+			log:     log.NewLogger("daemon/loader"),
+		}
+	})
+	return _loader
+}
 
 func SetService(s *dbusutil.Service) {
 	l := getLoader()
@@ -87,13 +85,13 @@ func StartAll() {
 	for _, module := range allModules {
 		modules = append(modules, module.Name())
 	}
-	getLoader().EnableModules(modules, []string{}, EnableFlagNone)
+	_ = getLoader().EnableModules(modules, []string{}, EnableFlagNone)
 }
 
 // TODO: check dependencies
 func StopAll() {
 	modules := getLoader().List()
 	for _, module := range modules {
-		module.Enable(false)
+		_ = module.Enable(false)
 	}
 }

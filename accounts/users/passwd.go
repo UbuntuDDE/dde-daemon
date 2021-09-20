@@ -31,7 +31,10 @@ import "C"
 import (
 	"fmt"
 	"io/ioutil"
+	"math"
 	"os"
+	"os/user"
+	"strconv"
 	"strings"
 	"sync"
 	"unsafe"
@@ -46,6 +49,37 @@ func EncodePasswd(words string) string {
 	defer C.free(unsafe.Pointer(cwords))
 
 	return C.GoString(C.mkpasswd(cwords))
+}
+
+func ExistPwUid(uid uint32) int {
+	return int(C.exist_pw_uid(C.uint(uid)))
+}
+
+func GetPwName(uid uint32) string {
+	return C.GoString(C.get_pw_name(C.uint(uid)))
+}
+
+func GetPwGecos(uid uint32) string {
+	var pwGecos string
+	pwGecos = C.GoString(C.get_pw_gecos(C.uint(uid)))
+
+	return strings.Split(pwGecos, ",")[0]
+}
+
+func GetPwUid(uid uint32) string {
+	return strconv.FormatUint(uint64(C.get_pw_uid(C.uint(uid))), 10)
+}
+
+func GetPwGid(uid uint32) string {
+	return strconv.FormatUint(uint64(C.get_pw_gid(C.uint(uid))), 10)
+}
+
+func GetPwDir(uid uint32) string {
+	return C.GoString(C.get_pw_dir(C.uint(uid)))
+}
+
+func GetPwShell(uid uint32) string {
+	return C.GoString(C.get_pw_shell(C.uint(uid)))
 }
 
 // password: has been crypt
@@ -102,7 +136,18 @@ func updatePasswd(password, username string) error {
 		return fmt.Errorf("The username not exist.")
 	}
 
-	return writeStrvToFile(datas, userFileShadow, 0600)
+	err = writeStrvToFile(datas, userFileShadow, math.MaxUint32)
+	if err != nil {
+		return nil
+	}
+
+	usr, _ := user.Lookup("root")
+	grp, _ := user.LookupGroup("shadow")
+	uid, _ := strconv.Atoi(usr.Uid)
+	gid, _ := strconv.Atoi(grp.Gid)
+	err = os.Chown(userFileShadow, uid, gid)
+
+	return err
 }
 
 func writeStrvToFile(datas []string, file string, mode os.FileMode) error {
@@ -119,7 +164,9 @@ func writeStrvToFile(datas []string, file string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 
 	wLocker.Lock()
 	defer wLocker.Unlock()
@@ -131,6 +178,11 @@ func writeStrvToFile(datas []string, file string, mode os.FileMode) error {
 	err = f.Sync()
 	if err != nil {
 		return err
+	}
+
+	info, err := os.Stat(file)
+	if err == nil && mode == math.MaxUint32 {
+		mode = info.Mode()
 	}
 
 	os.Rename(file+".bak~", file)

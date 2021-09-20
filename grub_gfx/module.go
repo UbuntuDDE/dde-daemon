@@ -18,7 +18,6 @@ func (*module) GetDependencies() []string {
 }
 
 func (d *module) Start() error {
-	logger.Debug("module start")
 	detectChange()
 	return nil
 }

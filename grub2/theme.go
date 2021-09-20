@@ -32,11 +32,8 @@ type Theme struct {
 	service *dbusutil.Service
 
 	PropsMu sync.RWMutex
-	methods *struct {
-		SetBackgroundSourceFile func() `in:"filename"`
-		GetBackground           func() `out:"background"`
-	}
 
+	//nolint
 	signals *struct {
 		BackgroundChanged struct{}
 	}

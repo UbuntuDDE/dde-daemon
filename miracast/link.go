@@ -26,9 +26,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linuxdeepin/go-dbus-factory/org.freedesktop.miracle.wifi"
-	"pkg.deepin.io/dde/daemon/iw"
-	"pkg.deepin.io/lib/dbus1"
+	"github.com/godbus/dbus"
+	wifi "github.com/linuxdeepin/go-dbus-factory/org.freedesktop.miracle.wifi"
 	"pkg.deepin.io/lib/dbusutil/proxy"
 )
 
@@ -42,7 +41,7 @@ type LinkInfo struct {
 
 	interfaceName string
 	index         uint32
-	core          *wifi.Link
+	core          wifi.Link
 	locker        sync.Mutex
 	myManaged     bool
 }
@@ -136,14 +135,6 @@ func (link *LinkInfo) update() {
 	link.interfaceName, _ = link.core.InterfaceName().Get(0)
 }
 
-func (link *LinkInfo) hasP2PSupported() bool {
-	infos, err := iw.ListWirelessInfo()
-	if err != nil {
-		return false
-	}
-	return infos.ListMiracastDevice().Get(link.MacAddress) != nil
-}
-
 func (link *LinkInfo) EnableManaged(enabled bool) error {
 	managed, err := link.core.Managed().Get(0)
 	if err != nil {
@@ -168,7 +159,7 @@ func (link *LinkInfo) waitManaged(wantManaged bool) error {
 	})
 }
 
-func waitPeerConnected(peer *wifi.Peer, wantConnected bool) error {
+func waitPeerConnected(peer wifi.Peer, wantConnected bool) error {
 	name := fmt.Sprintf("peer %s connected", peer.Path_())
 	return waitChange(name, wantConnected, func() (b bool, err error) {
 		return peer.Connected().Get(0)

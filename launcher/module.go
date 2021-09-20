@@ -20,8 +20,6 @@
 package launcher
 
 import (
-	"time"
-
 	"pkg.deepin.io/dde/daemon/loader"
 	"pkg.deepin.io/lib/log"
 )
@@ -74,15 +72,7 @@ func (d *Module) start() error {
 }
 
 func (d *Module) Start() error {
-	go func() {
-		t0 := time.Now()
-		err := d.start()
-		if err != nil {
-			logger.Warning(err)
-		}
-		logger.Info("start launcher module cost", time.Since(t0))
-	}()
-	return nil
+	return d.start()
 }
 
 func (d *Module) Stop() error {

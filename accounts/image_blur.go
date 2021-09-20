@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"pkg.deepin.io/lib/dbus1"
+	"github.com/godbus/dbus"
 	"pkg.deepin.io/lib/dbusutil"
 	dutils "pkg.deepin.io/lib/utils"
 )
@@ -21,18 +21,13 @@ type ImageBlur struct {
 	service *dbusutil.Service
 	mu      sync.Mutex
 	tasks   map[string]struct{}
-
+	//nolint
 	signals *struct {
 		BlurDone struct {
 			imgFile     string
 			imgBlurFile string
 			ok          bool
 		}
-	}
-
-	methods *struct {
-		Get    func() `in:"source" out:"blurred"`
-		Delete func() `in:"file"`
 	}
 }
 
@@ -47,7 +42,7 @@ func (ib *ImageBlur) GetInterfaceName() string {
 	return imageBlurDBusInterface
 }
 
-func (ib *ImageBlur) Get(file string) (string, *dbus.Error) {
+func (ib *ImageBlur) Get(file string) (blurred string, busErr *dbus.Error) {
 	logger.Debugf("Get %q", file)
 
 	blurFile := getImageBlurFile(file)
@@ -56,7 +51,7 @@ func (ib *ImageBlur) Get(file string) (string, *dbus.Error) {
 		logger.Warning(err)
 		if os.IsNotExist(err) {
 			// source file not exist
-			os.Remove(blurFile)
+			_ = os.Remove(blurFile)
 		}
 		return "", dbusutil.ToError(err)
 	}
@@ -167,7 +162,7 @@ func (ib *ImageBlur) emitBlurDone(file string, ok bool) {
 func genGaussianBlur(file string) {
 	file = dutils.DecodeURI(file)
 	if _imageBlur != nil {
-		_imageBlur.Get(file)
+		_, _ = _imageBlur.Get(file)
 	} else {
 		logger.Warning("_imageBlur is nil")
 	}

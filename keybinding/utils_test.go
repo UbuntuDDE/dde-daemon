@@ -20,14 +20,15 @@
 package keybinding
 
 import (
+	"os"
 	"testing"
 
-	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/assert"
 )
 
-func TestIBMHotkey(t *testing.T) {
-	Convey("Test ibm hotkey checker", t, func(c C) {
-		c.So(checkIBMHotkey("testdata/hotkey"), ShouldEqual, true)
-		c.So(checkIBMHotkey("testdata/hotkey_disable"), ShouldEqual, false)
-	})
+func Test_shouldUseDDEKwin(t *testing.T) {
+	_, err := os.Stat("/usr/bin/kwin_no_scale")
+	exist1 := err == nil
+	exist2 := shouldUseDDEKwin()
+	assert.Equal(t, exist1, exist2)
 }
